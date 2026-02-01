@@ -152,25 +152,61 @@ Respond with ONLY valid JSON in this exact format (no other text):
   return { sentiment: 5, urgency: 5, themes: ["general"], job_to_be_done: "Help me use the product better" };
 }
 
-// Seed database with raw feedback (no analysis yet)
+// Seed database AND automatically analyze with Workers AI
 async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     await env.DB.prepare("DELETE FROM feedback").run();
     await env.DB.prepare("DELETE FROM themes").run();
 
     let inserted = 0;
+    let analyzed = 0;
+    const themeCounts: Record<string, number> = {};
+
     for (const f of MOCK_FEEDBACK) {
-      await env.DB.prepare(
-        "INSERT INTO feedback (source, content, author, url) VALUES (?, ?, ?, ?)"
-      ).bind(f.source, f.content, f.author, f.url).run();
+      // Insert raw feedback
+      const result = await env.DB.prepare(
+        "INSERT INTO feedback (source, content, author, url) VALUES (?, ?, ?, ?) RETURNING id"
+      ).bind(f.source, f.content, f.author, f.url).first() as { id: number };
       inserted++;
+
+      // Automatically analyze with Workers AI (Llama 3.1)
+      const analysis = await analyzeWithAI(env, f.content);
+
+      // Update with AI analysis results
+      await env.DB.prepare(
+        `UPDATE feedback SET
+          sentiment = ?, themes = ?, urgency = ?, job_to_be_done = ?, analyzed_at = datetime('now')
+         WHERE id = ?`
+      ).bind(
+        String(analysis.sentiment),
+        JSON.stringify(analysis.themes),
+        String(analysis.urgency),
+        analysis.job_to_be_done,
+        result.id
+      ).run();
+      analyzed++;
+
+      // Count themes for aggregation
+      analysis.themes.forEach(t => {
+        themeCounts[t.toLowerCase()] = (themeCounts[t.toLowerCase()] || 0) + 1;
+      });
+    }
+
+    // Store theme counts
+    for (const [name, count] of Object.entries(themeCounts)) {
+      await env.DB.prepare(
+        `INSERT INTO themes (name, count, last_seen) VALUES (?, ?, datetime('now'))
+         ON CONFLICT(name) DO UPDATE SET count = ?, last_seen = datetime('now')`
+      ).bind(name, count, count).run();
     }
 
     return Response.json({
       success: true,
-      message: `Seeded ${inserted} feedback entries. Now call /api/analyze to run AI analysis.`,
-      count: inserted,
-      next_step: "POST /api/analyze"
+      message: `Loaded and analyzed ${analyzed} feedback entries using Workers AI (Llama 3.1)`,
+      inserted,
+      analyzed,
+      ai_model: "@cf/meta/llama-3.1-8b-instruct",
+      themes_extracted: Object.keys(themeCounts).length
     }, { headers: corsHeaders });
   } catch (error) {
     return Response.json({ success: false, error: String(error) }, { status: 500, headers: corsHeaders });
@@ -395,39 +431,28 @@ function getOverviewPage(feedbackData: FeedbackEntry[], stats: any): string {
     appstore: '#007aff', forum: '#22c55e', email: '#6b7280'
   };
 
-  // Show setup instructions if not analyzed yet
-  if (stats.analyzed === 0) {
+  // Show setup instructions if no data yet
+  if (stats.total === 0) {
     return `
-      <h1 class="page-title">Welcome to the Feedback Dashboard</h1>
-      <p class="page-subtitle">Let's set up your data and run AI analysis</p>
+      <h1 class="page-title">NotebookLM Feedback Aggregator</h1>
+      <p class="page-subtitle">AI-powered feedback analysis using Cloudflare Workers</p>
 
       <div class="setup-box">
-        <h2 style="color: #3b82f6; margin-bottom: 1rem;">Setup Instructions</h2>
-        <p style="margin-bottom: 1rem;">This dashboard uses <strong>Workers AI (Llama 3.1)</strong> to analyze customer feedback. Follow these steps:</p>
+        <h2 style="color: #3b82f6; margin-bottom: 1rem;">Get Started</h2>
+        <p style="margin-bottom: 1rem;">This tool uses <strong>Workers AI (Llama 3.1)</strong> to automatically analyze customer feedback.</p>
 
-        <p style="margin: 1rem 0;"><strong>Step 1:</strong> Seed the database with sample feedback</p>
+        <p style="margin: 1rem 0;"><strong>Load sample data:</strong> (AI analyzes each entry automatically)</p>
         <div class="setup-step">curl -X POST ${typeof location !== 'undefined' ? location.origin : 'YOUR_URL'}/api/seed</div>
 
-        <p style="margin: 1rem 0;"><strong>Step 2:</strong> Run AI analysis (Llama 3.1 will analyze each entry)</p>
-        <div class="setup-step">curl -X POST ${typeof location !== 'undefined' ? location.origin : 'YOUR_URL'}/api/analyze</div>
+        <p style="margin: 1rem 0;">Then refresh this page!</p>
 
-        <p style="margin: 1rem 0;"><strong>Step 3:</strong> Refresh this page to see the results!</p>
-
-        <p style="margin-top: 1.5rem; color: #94a3b8; font-size: 0.9rem;">
-          The AI analyzes each piece of feedback for: sentiment (0-10), urgency (0-10), themes, and job-to-be-done.
-        </p>
-      </div>
-
-      <div class="grid">
-        <div class="card">
-          <h2>Total Feedback</h2>
-          <div class="stat-number">${stats.total}</div>
-          <div class="stat-label">entries loaded</div>
-        </div>
-        <div class="card">
-          <h2>Analyzed</h2>
-          <div class="stat-number">${stats.analyzed}</div>
-          <div class="stat-label">by Workers AI</div>
+        <div style="margin-top: 1.5rem; padding: 1rem; background: #0f172a; border-radius: 8px;">
+          <h3 style="color: #8b5cf6; margin-bottom: 0.5rem;">Cloudflare Products Used:</h3>
+          <ul style="color: #94a3b8; margin-left: 1.5rem;">
+            <li><strong>Workers</strong> - Hosting this application</li>
+            <li><strong>D1 Database</strong> - Storing feedback entries</li>
+            <li><strong>Workers AI</strong> - Llama 3.1 for sentiment, urgency, themes</li>
+          </ul>
         </div>
       </div>
     `;
