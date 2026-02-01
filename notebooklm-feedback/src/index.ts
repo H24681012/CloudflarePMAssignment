@@ -23,15 +23,21 @@ interface FeedbackEntry {
   sentiment?: string;
   themes?: string;
   urgency?: string;
-  job_to_be_done?: string;
   created_at?: string;
   analyzed_at?: string;
 }
 
+// AI analysis output - computed at runtime, NOT stored in database
 interface AIAnalysis {
   sentiment: number;
   urgency: number;
   themes: string[];
+}
+
+// JTBD is computed separately and never stored - it's an OUTPUT, not INPUT
+interface JTBDResult {
+  feedbackId: number;
+  content: string;
   job_to_be_done: string;
 }
 
@@ -132,7 +138,7 @@ async function generateEmbedding(env: Env, text: string): Promise<number[]> {
   }
 }
 
-// Use Workers AI (Llama 3.1) to analyze feedback
+// Use Workers AI (Llama 3.1) to analyze feedback - stores sentiment/urgency/themes only
 async function analyzeWithAI(env: Env, content: string): Promise<AIAnalysis> {
   const prompt = `Analyze this customer feedback about NotebookLM (a document analysis AI tool).
 
@@ -142,14 +148,8 @@ Respond with ONLY valid JSON in this exact format (no other text):
 {
   "sentiment": <number 0-10 where 0=very negative, 5=neutral, 10=very positive>,
   "urgency": <number 0-10 where 0=not urgent, 10=critical/blocking issue>,
-  "themes": [<array of 2-3 keyword themes like "audio-quality", "source-limit", "collaboration">],
-  "job_to_be_done": "<use JTBD format: When I [context], but [barrier], help me [goal], so I can [outcome]>"
-}
-
-IMPORTANT: The job_to_be_done MUST follow this exact structure:
-"When I [situation/context the user is in], but [the barrier or problem they face], help me [what they want the product to do], so I can [the outcome they desire]."
-
-Example: "When I need to review multiple research papers, but I don't have time to read them all, help me quickly synthesize key insights, so I can make informed decisions faster."`;
+  "themes": [<array of 2-3 keyword themes like "audio-quality", "source-limit", "collaboration">]
+}`;
 
   try {
     const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
@@ -157,10 +157,9 @@ Example: "When I need to review multiple research papers, but I don't have time 
         { role: "system", content: "You are a product feedback analyst. Always respond with valid JSON only, no other text." },
         { role: "user", content: prompt }
       ],
-      max_tokens: 350,
+      max_tokens: 200,
     });
 
-    // Parse the AI response
     const text = (response as any).response || "";
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -168,19 +167,72 @@ Example: "When I need to review multiple research papers, but I don't have time 
       return {
         sentiment: Math.min(10, Math.max(0, Number(parsed.sentiment) || 5)),
         urgency: Math.min(10, Math.max(0, Number(parsed.urgency) || 5)),
-        themes: Array.isArray(parsed.themes) ? parsed.themes.slice(0, 3) : ["general"],
-        job_to_be_done: parsed.job_to_be_done || "When I use this product, but encounter friction, help me accomplish my goal, so I can be more productive."
+        themes: Array.isArray(parsed.themes) ? parsed.themes.slice(0, 3) : ["general"]
       };
     }
   } catch (e) {
     console.error("AI analysis error:", e);
   }
 
-  // Fallback if AI fails
-  return { sentiment: 5, urgency: 5, themes: ["general"], job_to_be_done: "When I use this product, but encounter friction, help me accomplish my goal, so I can be more productive." };
+  return { sentiment: 5, urgency: 5, themes: ["general"] };
+}
+
+// Compute JTBD on-demand - this is an OUTPUT, never stored in database
+async function computeJTBD(env: Env, content: string): Promise<string> {
+  const prompt = `Analyze this customer feedback about NotebookLM and extract the Job to be Done.
+
+Feedback: "${content}"
+
+Write ONLY a single JTBD statement using this exact format:
+"When I [situation/context], but [barrier/problem], help me [goal], so I can [outcome]."
+
+Example: "When I need to review multiple research papers, but I don't have time to read them all, help me quickly synthesize key insights, so I can make informed decisions faster."
+
+Respond with ONLY the JTBD statement, nothing else.`;
+
+  try {
+    const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+      messages: [
+        { role: "system", content: "You are a product analyst. Respond with only the JTBD statement." },
+        { role: "user", content: prompt }
+      ],
+      max_tokens: 150,
+    });
+
+    const text = ((response as any).response || "").trim();
+    if (text && text.toLowerCase().includes("when i")) {
+      return text;
+    }
+  } catch (e) {
+    console.error("JTBD computation error:", e);
+  }
+
+  return "When I use this product, but encounter friction, help me accomplish my goal, so I can be more productive.";
+}
+
+// Batch compute JTBDs for multiple feedback items
+async function computeJTBDsForFeedback(env: Env, feedbackItems: FeedbackEntry[]): Promise<Map<number, string>> {
+  const jtbdMap = new Map<number, string>();
+
+  // Process in parallel for better performance (limit concurrency)
+  const batchSize = 5;
+  for (let i = 0; i < feedbackItems.length; i += batchSize) {
+    const batch = feedbackItems.slice(i, i + batchSize);
+    const results = await Promise.all(
+      batch.map(async (f) => {
+        const jtbd = await computeJTBD(env, f.content);
+        return { id: f.id!, jtbd };
+      })
+    );
+    results.forEach(r => jtbdMap.set(r.id, r.jtbd));
+  }
+
+  return jtbdMap;
 }
 
 // Auto-seed function (called automatically when DB is empty)
+// NOTE: Database stores ONLY raw inputs + basic analysis (sentiment/urgency/themes)
+// JTBD is computed on-demand by AI, never stored
 async function autoSeedData(env: Env): Promise<void> {
   const themeCounts: Record<string, number> = {};
   const vectors: VectorizeVector[] = [];
@@ -192,9 +244,10 @@ async function autoSeedData(env: Env): Promise<void> {
 
     const analysis = await analyzeWithAI(env, f.content);
 
+    // Store sentiment, themes, urgency - but NOT job_to_be_done (that's computed on-demand)
     await env.DB.prepare(
-      `UPDATE feedback SET sentiment = ?, themes = ?, urgency = ?, job_to_be_done = ?, analyzed_at = datetime('now') WHERE id = ?`
-    ).bind(String(analysis.sentiment), JSON.stringify(analysis.themes), String(analysis.urgency), analysis.job_to_be_done, result.id).run();
+      `UPDATE feedback SET sentiment = ?, themes = ?, urgency = ?, analyzed_at = datetime('now') WHERE id = ?`
+    ).bind(String(analysis.sentiment), JSON.stringify(analysis.themes), String(analysis.urgency), result.id).run();
 
     const embedding = await generateEmbedding(env, f.content);
     if (embedding.length > 0) {
@@ -222,6 +275,7 @@ async function autoSeedData(env: Env): Promise<void> {
 }
 
 // Seed database AND automatically analyze with Workers AI + store embeddings in Vectorize
+// NOTE: JTBD is NOT stored - it's computed on-demand when viewing the JTBD page
 async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     await env.DB.prepare("DELETE FROM feedback").run();
@@ -234,25 +288,22 @@ async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promis
     const vectors: VectorizeVector[] = [];
 
     for (const f of MOCK_FEEDBACK) {
-      // Insert raw feedback
+      // Insert raw feedback (INPUT)
       const result = await env.DB.prepare(
         "INSERT INTO feedback (source, content, author, url) VALUES (?, ?, ?, ?) RETURNING id"
       ).bind(f.source, f.content, f.author, f.url).first() as { id: number };
       inserted++;
 
-      // Automatically analyze with Workers AI (Llama 3.1)
+      // Analyze with Workers AI (Llama 3.1) - only sentiment/urgency/themes
       const analysis = await analyzeWithAI(env, f.content);
 
-      // Update with AI analysis results
+      // Store analysis results - but NOT job_to_be_done (that's computed on-demand as OUTPUT)
       await env.DB.prepare(
-        `UPDATE feedback SET
-          sentiment = ?, themes = ?, urgency = ?, job_to_be_done = ?, analyzed_at = datetime('now')
-         WHERE id = ?`
+        `UPDATE feedback SET sentiment = ?, themes = ?, urgency = ?, analyzed_at = datetime('now') WHERE id = ?`
       ).bind(
         String(analysis.sentiment),
         JSON.stringify(analysis.themes),
         String(analysis.urgency),
-        analysis.job_to_be_done,
         result.id
       ).run();
       analyzed++;
@@ -298,13 +349,14 @@ async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promis
 
     return Response.json({
       success: true,
-      message: `Loaded and analyzed ${analyzed} feedback entries with AI + Vectorize`,
+      message: `Loaded and analyzed ${analyzed} feedback entries with AI + Vectorize. JTBD computed on-demand.`,
       inserted,
       analyzed,
       embedded,
       ai_model: "@cf/meta/llama-3.1-8b-instruct",
       embedding_model: "@cf/baai/bge-base-en-v1.5",
-      themes_extracted: Object.keys(themeCounts).length
+      themes_extracted: Object.keys(themeCounts).length,
+      note: "Job-to-be-done is computed by AI on-demand when viewing the JTBD page, not stored in database"
     }, { headers: corsHeaders });
   } catch (error) {
     return Response.json({ success: false, error: String(error) }, { status: 500, headers: corsHeaders });
@@ -312,6 +364,7 @@ async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promis
 }
 
 // Run AI analysis on all unanalyzed feedback
+// NOTE: Only stores sentiment/urgency/themes - JTBD is computed on-demand
 async function handleAnalyze(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     // Get unanalyzed feedback
@@ -331,19 +384,16 @@ async function handleAnalyze(env: Env, corsHeaders: Record<string, string>): Pro
     let analyzed = 0;
 
     for (const feedback of result.results as FeedbackEntry[]) {
-      // Call Workers AI for analysis
+      // Call Workers AI for analysis - only sentiment/urgency/themes
       const analysis = await analyzeWithAI(env, feedback.content);
 
-      // Update the database with AI results
+      // Update the database - NOT storing job_to_be_done (computed on-demand)
       await env.DB.prepare(
-        `UPDATE feedback SET
-          sentiment = ?, themes = ?, urgency = ?, job_to_be_done = ?, analyzed_at = datetime('now')
-         WHERE id = ?`
+        `UPDATE feedback SET sentiment = ?, themes = ?, urgency = ?, analyzed_at = datetime('now') WHERE id = ?`
       ).bind(
         String(analysis.sentiment),
         JSON.stringify(analysis.themes),
         String(analysis.urgency),
-        analysis.job_to_be_done,
         feedback.id
       ).run();
 
@@ -373,7 +423,7 @@ async function handleAnalyze(env: Env, corsHeaders: Record<string, string>): Pro
       message: `Analyzed ${analyzed} feedback entries using Workers AI (Llama 3.1)`,
       analyzed,
       remaining: remaining.count,
-      note: remaining.count > 0 ? "Call /api/analyze again to analyze more" : "All done!"
+      note: remaining.count > 0 ? "Call /api/analyze again to analyze more" : "All done! JTBD computed on-demand when viewing JTBD page."
     }, { headers: corsHeaders });
   } catch (error) {
     return Response.json({ success: false, error: String(error) }, { status: 500, headers: corsHeaders });
@@ -474,9 +524,9 @@ async function handleSimilar(request: Request, env: Env, corsHeaders: Record<str
 // API: Get cluster data for D3.js visualization using Vectorize
 async function handleClusters(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
-    // Get all analyzed feedback
+    // Get all analyzed feedback (JTBD not stored - computed on-demand on JTBD page only)
     const result = await env.DB.prepare(
-      "SELECT id, content, source, sentiment, urgency, themes, job_to_be_done FROM feedback WHERE analyzed_at IS NOT NULL"
+      "SELECT id, content, source, sentiment, urgency, themes FROM feedback WHERE analyzed_at IS NOT NULL"
     ).all();
     const feedback = result.results as FeedbackEntry[];
 
@@ -484,15 +534,14 @@ async function handleClusters(env: Env, corsHeaders: Record<string, string>): Pr
       return Response.json({ nodes: [], links: [] }, { headers: corsHeaders });
     }
 
-    // Build nodes
+    // Build nodes (no JTBD - that's computed on-demand only on JTBD page)
     const nodes = feedback.map(f => ({
       id: String(f.id),
       content: f.content?.substring(0, 100) + "...",
       source: f.source,
       sentiment: parseInt(f.sentiment || "5"),
       urgency: parseInt(f.urgency || "5"),
-      themes: f.themes ? JSON.parse(f.themes) : [],
-      jtbd: f.job_to_be_done
+      themes: f.themes ? JSON.parse(f.themes) : []
     }));
 
     // Use Vectorize to find similar feedback and create links
@@ -655,7 +704,7 @@ function getNav(activePage: string): string {
 async function handleDashboard(env: Env, page: string): Promise<Response> {
   let feedbackData: FeedbackEntry[] = [];
   let stats = { total: 0, analyzed: 0, avgSentiment: 0, avgUrgency: 0, bySource: {} as Record<string, number>, topThemes: [] as any[] };
-  let isLoading = false;
+  let jtbdMap: Map<number, string> = new Map();
 
   try {
     const result = await env.DB.prepare("SELECT * FROM feedback ORDER BY created_at DESC").all();
@@ -664,7 +713,6 @@ async function handleDashboard(env: Env, page: string): Promise<Response> {
 
     // AUTO-SEED: If database is empty, automatically load and analyze mock data
     if (stats.total === 0) {
-      isLoading = true;
       await autoSeedData(env);
       // Re-fetch after seeding
       const newResult = await env.DB.prepare("SELECT * FROM feedback ORDER BY created_at DESC").all();
@@ -686,6 +734,11 @@ async function handleDashboard(env: Env, page: string): Promise<Response> {
 
     const themeResult = await env.DB.prepare("SELECT name, count FROM themes ORDER BY count DESC LIMIT 10").all();
     stats.topThemes = themeResult.results;
+
+    // For JTBD page: compute JTBDs on-demand using Workers AI (OUTPUT, not stored)
+    if (page === 'insights' && analyzed.length > 0) {
+      jtbdMap = await computeJTBDsForFeedback(env, analyzed.slice(0, 20)); // Limit for performance
+    }
   } catch (e) {
     // DB might be empty
   }
@@ -694,7 +747,7 @@ async function handleDashboard(env: Env, page: string): Promise<Response> {
   if (page === 'overview') content = getOverviewPage(feedbackData, stats);
   else if (page === 'clusters') content = getClustersPage();
   else if (page === 'feedback') content = getFeedbackPage(feedbackData);
-  else if (page === 'insights') content = getInsightsPage(feedbackData, stats);
+  else if (page === 'insights') content = getInsightsPage(feedbackData, stats, jtbdMap);
   else if (page === 'digest') content = getDigestPage(feedbackData, stats);
 
   const extraScripts = page === 'clusters' ? '<script src="https://d3js.org/d3.v7.min.js"></script>' : '';
@@ -947,7 +1000,7 @@ function getClustersPage(): string {
         document.getElementById('detail-meta').innerHTML =
           '<span style="color: ' + getColor(d.sentiment) + ';">Sentiment: ' + d.sentiment + '/10</span> | ' +
           'Urgency: ' + d.urgency + '/10 | Source: ' + d.source +
-          (d.jtbd ? '<br><strong style="color: #8b5cf6;">JTBD:</strong> ' + d.jtbd : '');
+          '<br><em style="color: #64748b;">View JTBD analysis on the JTBD tab</em>';
       });
 
       // Update positions
@@ -1060,12 +1113,6 @@ function getFeedbackPage(feedbackData: FeedbackEntry[]): string {
                   <span class="source-tag ${sourceClass}">${f.source}</span>
                 </div>
                 <div class="tweet-content">${f.content}</div>
-                ${isAnalyzed && f.job_to_be_done ? `
-                  <div class="tweet-insight">
-                    <div class="tweet-insight-label">AI-Detected Job to be Done</div>
-                    <div class="tweet-insight-text">${f.job_to_be_done}</div>
-                  </div>
-                ` : ''}
                 ${isAnalyzed ? `
                   <div class="tweet-metrics">
                     <span class="tweet-metric ${sent >= 7 ? 'sentiment-high' : sent >= 4 ? 'sentiment-mid' : 'sentiment-low'}">
@@ -1103,23 +1150,33 @@ function getFeedbackPage(feedbackData: FeedbackEntry[]): string {
   `;
 }
 
-function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
-  const analyzed = feedbackData.filter(f => f.analyzed_at && f.job_to_be_done);
+// JTBD page - JTBDs are computed on-demand by AI, never stored in database
+function getInsightsPage(feedbackData: FeedbackEntry[], stats: any, computedJTBDs: Map<number, string>): string {
+  const analyzed = feedbackData.filter(f => f.analyzed_at);
 
-  // Group feedback by their AI-extracted JTBD (exact match for now)
-  const jtbdMap: Record<string, FeedbackEntry[]> = {};
-  analyzed.forEach(f => {
-    const jtbd = f.job_to_be_done || '';
-    if (!jtbdMap[jtbd]) jtbdMap[jtbd] = [];
-    jtbdMap[jtbd].push(f);
+  // Build list of feedback items with their on-demand computed JTBDs
+  interface FeedbackWithJTBD extends FeedbackEntry {
+    computed_jtbd: string;
+  }
+
+  const feedbackWithJTBDs: FeedbackWithJTBD[] = analyzed
+    .filter(f => f.id && computedJTBDs.has(f.id))
+    .map(f => ({ ...f, computed_jtbd: computedJTBDs.get(f.id!)! }));
+
+  // Group by JTBD (computed on-demand, NOT from database)
+  const jtbdGroups: Record<string, FeedbackWithJTBD[]> = {};
+  feedbackWithJTBDs.forEach(f => {
+    const jtbd = f.computed_jtbd;
+    if (!jtbdGroups[jtbd]) jtbdGroups[jtbd] = [];
+    jtbdGroups[jtbd].push(f);
   });
 
   // Sort JTBDs by frequency
-  const sortedJTBDs = Object.entries(jtbdMap)
+  const sortedJTBDs = Object.entries(jtbdGroups)
     .sort((a, b) => b[1].length - a[1].length);
 
   // Calculate avg sentiment per JTBD
-  const getAvgSentiment = (items: FeedbackEntry[]) => {
+  const getAvgSentiment = (items: FeedbackWithJTBD[]) => {
     const sum = items.reduce((acc, f) => acc + parseInt(f.sentiment || "5"), 0);
     return Math.round((sum / items.length) * 10) / 10;
   };
@@ -1137,10 +1194,16 @@ function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
       .jtbd-count { background: #8b5cf6; color: white; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem; font-weight: 600; }
       .jtbd-sentiment { padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem; }
       .jtbd-sources { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+      .jtbd-note { background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); padding: 0.75rem; border-radius: 8px; margin-bottom: 1.5rem; }
+      .jtbd-note p { color: #a78bfa; font-size: 0.85rem; margin: 0; }
     </style>
 
     <h1 class="page-title">Jobs to be Done</h1>
-    <p class="page-subtitle">AI-extracted jobs from ${analyzed.length} feedback items using <strong>Workers AI (Llama 3.1)</strong></p>
+    <p class="page-subtitle">AI-computed jobs from customer feedback using <strong>Workers AI (Llama 3.1)</strong></p>
+
+    <div class="jtbd-note">
+      <p><strong>Architecture:</strong> JTBDs are computed on-demand by Workers AI. The database only stores raw feedback (inputs). JTBDs are outputs, never stored.</p>
+    </div>
 
     <div class="card full-width" style="margin-bottom: 2rem; background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%); border-color: #3b82f6;">
       <h2 style="color: #3b82f6;">JTBD Framework</h2>
@@ -1148,11 +1211,11 @@ function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
         Each job follows the format: <span style="color: #60a5fa;">When I</span> [context], <span style="color: #f87171;">but</span> [barrier], <span style="color: #4ade80;">help me</span> [goal], <span style="color: #c084fc;">so I can</span> [outcome].
       </p>
       <p style="margin-top: 0.5rem; color: #64748b; font-size: 0.9rem;">
-        ${sortedJTBDs.length} unique jobs identified from user feedback.
+        ${sortedJTBDs.length} unique jobs computed from ${feedbackWithJTBDs.length} feedback items.
       </p>
     </div>
 
-    <h2 style="margin-bottom: 1rem;">All AI-Extracted Jobs (${sortedJTBDs.length})</h2>
+    <h2 style="margin-bottom: 1rem;">AI-Computed Jobs (${sortedJTBDs.length})</h2>
 
     ${sortedJTBDs.map(([jtbd, items]) => {
       const avgSent = getAvgSentiment(items);
@@ -1188,7 +1251,7 @@ function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
     ${sortedJTBDs.length === 0 ? `
       <div class="card full-width">
         <p style="text-align: center; color: #64748b; padding: 2rem;">
-          No JTBD data extracted yet. The AI will extract jobs-to-be-done when feedback is analyzed.
+          Loading JTBDs... Workers AI is computing jobs-to-be-done from feedback.
         </p>
       </div>
     ` : ''}
@@ -1242,24 +1305,6 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
   const stats7d = getPeriodStats(last7d);
   const stats90d = getPeriodStats(last90d);
 
-  // Get unique JTBDs for insights
-  const getTopJTBDs = (items: FeedbackEntry[]) => {
-    const jtbdCount: Record<string, number> = {};
-    items.forEach(f => {
-      if (f.job_to_be_done) {
-        jtbdCount[f.job_to_be_done] = (jtbdCount[f.job_to_be_done] || 0) + 1;
-      }
-    });
-    return Object.entries(jtbdCount)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3);
-  };
-
-  // Pre-compute all data
-  const jtbds24h = getTopJTBDs(last24h);
-  const jtbds7d = getTopJTBDs(last7d);
-  const jtbds90d = getTopJTBDs(last90d);
-
   // Helper to render items
   const renderIssues = (items: FeedbackEntry[]) => items.map(f =>
     '<div class="digest-item issue"><div class="digest-item-content">"' + f.content.substring(0, 150) + (f.content.length > 150 ? '...' : '') + '"</div><div class="digest-item-meta"><span class="badge badge-source">' + f.source + '</span><span class="badge score-low">Urg: ' + f.urgency + '/10</span></div></div>'
@@ -1269,22 +1314,18 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
     '<div class="digest-item praise"><div class="digest-item-content">"' + f.content.substring(0, 150) + (f.content.length > 150 ? '...' : '') + '"</div><div class="digest-item-meta"><span class="badge badge-source">' + f.source + '</span><span class="badge score-high">Sent: ' + f.sentiment + '/10</span></div></div>'
   ).join('');
 
-  const renderJTBDs = (items: [string, number][]) => items.map(([jtbd, count]) =>
-    '<div class="digest-jtbd"><span class="jtbd-text">' + jtbd + '</span><span class="jtbd-count">' + count + 'x</span></div>'
-  ).join('');
-
   const getSentColor = (avg: number) => avg >= 7 ? '#22c55e' : avg >= 4 ? '#eab308' : '#ef4444';
   const getSentEmoji = (avg: number) => avg >= 7 ? '😊' : avg >= 4 ? '😐' : '😟';
   const getUrgEmoji = (avg: number) => avg >= 7 ? '🔥' : avg >= 4 ? '⚡' : '💤';
 
-  const renderDigestSection = (title: string, periodStats: any, jtbds: [string, number][]) => {
+  const renderDigestSection = (title: string, periodStats: any) => {
     return '<div class="digest-section"><div class="digest-header"><h3>' + title + '</h3><span class="digest-count">' + periodStats.count + ' feedback items</span></div>' +
       '<div class="digest-metrics">' +
       '<div class="digest-metric"><span class="digest-metric-value" style="color: ' + getSentColor(periodStats.avgSent) + '">' + getSentEmoji(periodStats.avgSent) + ' ' + periodStats.avgSent + '/10</span><span class="digest-metric-label">Avg Sentiment</span></div>' +
       '<div class="digest-metric"><span class="digest-metric-value" style="color: #fb923c">' + getUrgEmoji(periodStats.avgUrg) + ' ' + periodStats.avgUrg + '/10</span><span class="digest-metric-label">Avg Urgency</span></div>' +
       '<div class="digest-metric"><span class="digest-metric-value" style="color: #8b5cf6">' + Object.keys(periodStats.sources).length + '</span><span class="digest-metric-label">Sources</span></div>' +
       '</div>' +
-      (jtbds.length > 0 ? '<div class="digest-insights"><h4>Top Jobs to be Done</h4>' + renderJTBDs(jtbds) + '</div>' : '') +
+      '<div class="digest-insights"><h4>📋 Jobs to be Done</h4><p style="color: #94a3b8; font-size: 0.9rem;">View AI-computed JTBD analysis on the <a href="/insights" style="color: #8b5cf6;">JTBD tab</a></p></div>' +
       (periodStats.topIssues.length > 0 ? '<div class="digest-issues"><h4>🚨 Top Issues to Address</h4>' + renderIssues(periodStats.topIssues) + '</div>' : '<p style="color: #64748b; font-size: 0.9rem;">No critical issues in this period</p>') +
       (periodStats.topPraise.length > 0 ? '<div class="digest-praise"><h4>🌟 Positive Highlights</h4>' + renderPraise(periodStats.topPraise) + '</div>' : '') +
       '</div>';
@@ -1308,9 +1349,6 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
     '.digest-metric-label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }' +
     '.digest-insights { margin-bottom: 1.5rem; }' +
     '.digest-insights h4, .digest-issues h4, .digest-praise h4 { font-size: 0.9rem; color: #94a3b8; margin-bottom: 0.75rem; }' +
-    '.digest-jtbd { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1)); border-radius: 8px; margin-bottom: 0.5rem; }' +
-    '.jtbd-text { color: #c4b5fd; font-size: 0.9rem; }' +
-    '.jtbd-count { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }' +
     '.digest-issues, .digest-praise { margin-top: 1.5rem; }' +
     '.digest-item { background: #0f172a; padding: 1rem; border-radius: 8px; margin-bottom: 0.75rem; border-left: 3px solid transparent; }' +
     '.digest-item.issue { border-left-color: #ef4444; }' +
@@ -1344,9 +1382,9 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
     '<button class="digest-tab" data-period="7d" onclick="showTab(\'7d\')">Last 7 Days</button>' +
     '<button class="digest-tab" data-period="90d" onclick="showTab(\'90d\')">Last Quarter</button>' +
     '</div>' +
-    '<div id="panel-24h" class="digest-panel active">' + renderDigestSection('Last 24 Hours Summary', stats24h, jtbds24h) + '</div>' +
-    '<div id="panel-7d" class="digest-panel">' + renderDigestSection('Weekly Summary', stats7d, jtbds7d) + '</div>' +
-    '<div id="panel-90d" class="digest-panel">' + renderDigestSection('Quarterly Summary', stats90d, jtbds90d) + '</div>' +
+    '<div id="panel-24h" class="digest-panel active">' + renderDigestSection('Last 24 Hours Summary', stats24h) + '</div>' +
+    '<div id="panel-7d" class="digest-panel">' + renderDigestSection('Weekly Summary', stats7d) + '</div>' +
+    '<div id="panel-90d" class="digest-panel">' + renderDigestSection('Quarterly Summary', stats90d) + '</div>' +
     '<div class="email-preview">' +
     '<h4>📧 Email Delivery Note</h4>' +
     '<p>This digest would be sent to PMs via email using a third-party service (SendGrid, Resend, or Mailchannels).</p>' +
