@@ -589,6 +589,43 @@ function getStyles(): string {
     .setup-step { background: #0f172a; padding: 1rem; border-radius: 8px; margin: 0.5rem 0; font-family: monospace; }
     .btn { background: #8b5cf6; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 8px; cursor: pointer; font-size: 1rem; }
     .btn:hover { background: #7c3aed; }
+
+    /* Twitter-style feed */
+    .feed-container { max-width: 680px; margin: 0 auto; }
+    .tweet { background: #1e293b; border: 1px solid #334155; padding: 1rem 1.25rem; transition: background 0.15s; cursor: pointer; }
+    .tweet:hover { background: #283548; }
+    .tweet:not(:last-child) { border-bottom: none; }
+    .tweet:first-child { border-radius: 12px 12px 0 0; }
+    .tweet:last-child { border-radius: 0 0 12px 12px; }
+    .tweet:only-child { border-radius: 12px; }
+    .tweet-header { display: flex; align-items: flex-start; gap: 0.75rem; }
+    .tweet-avatar { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 1.1rem; flex-shrink: 0; }
+    .tweet-main { flex: 1; min-width: 0; }
+    .tweet-author-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem; flex-wrap: wrap; }
+    .tweet-author { font-weight: 600; color: #e2e8f0; }
+    .tweet-handle { color: #64748b; font-size: 0.9rem; }
+    .tweet-dot { color: #64748b; }
+    .tweet-time { color: #64748b; font-size: 0.9rem; }
+    .tweet-content { font-size: 1rem; line-height: 1.5; color: #e2e8f0; margin: 0.5rem 0; white-space: pre-wrap; word-wrap: break-word; }
+    .tweet-insight { background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(59, 130, 246, 0.15)); border: 1px solid rgba(139, 92, 246, 0.3); border-radius: 12px; padding: 0.75rem 1rem; margin: 0.75rem 0; }
+    .tweet-insight-label { color: #8b5cf6; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.25rem; }
+    .tweet-insight-text { color: #c4b5fd; font-size: 0.9rem; }
+    .tweet-metrics { display: flex; gap: 1rem; margin-top: 0.5rem; flex-wrap: wrap; }
+    .tweet-metric { display: flex; align-items: center; gap: 0.35rem; font-size: 0.8rem; padding: 0.25rem 0.5rem; border-radius: 6px; }
+    .tweet-metric.sentiment-high { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+    .tweet-metric.sentiment-mid { background: rgba(234, 179, 8, 0.15); color: #facc15; }
+    .tweet-metric.sentiment-low { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .tweet-metric.urgency { background: rgba(251, 146, 60, 0.15); color: #fb923c; }
+    .tweet-actions { display: flex; justify-content: space-between; margin-top: 0.75rem; max-width: 400px; }
+    .tweet-action { display: flex; align-items: center; gap: 0.5rem; color: #64748b; font-size: 0.85rem; padding: 0.5rem; border-radius: 50%; transition: all 0.2s; }
+    .tweet-action:hover { color: #8b5cf6; background: rgba(139, 92, 246, 0.1); }
+    .tweet-action svg { width: 18px; height: 18px; }
+    .source-tag { display: inline-flex; align-items: center; gap: 0.35rem; background: #334155; color: #94a3b8; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; font-weight: 500; }
+    .source-tag.discord { background: rgba(88, 101, 242, 0.2); color: #818cf8; }
+    .source-tag.github { background: rgba(110, 84, 148, 0.2); color: #a78bfa; }
+    .source-tag.twitter { background: rgba(29, 155, 240, 0.2); color: #38bdf8; }
+    .source-tag.email { background: rgba(234, 179, 8, 0.2); color: #facc15; }
+    .source-tag.forums { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
   `;
 }
 
@@ -940,27 +977,116 @@ function getClustersPage(): string {
 }
 
 function getFeedbackPage(feedbackData: FeedbackEntry[]): string {
+  // Generate avatar colors based on author name
+  const getAvatarColor = (name: string) => {
+    const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#8b5cf6', '#ec4899'];
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    return colors[Math.abs(hash) % colors.length];
+  };
+
+  // Get initials from author name
+  const getInitials = (name: string) => {
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '??';
+  };
+
+  // Generate handle from author name
+  const getHandle = (name: string) => {
+    return '@' + name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 15);
+  };
+
+  // Get source class for colored tags
+  const getSourceClass = (source: string) => {
+    const s = source.toLowerCase();
+    if (s.includes('discord')) return 'discord';
+    if (s.includes('github')) return 'github';
+    if (s.includes('twitter') || s.includes('x.com')) return 'twitter';
+    if (s.includes('email')) return 'email';
+    if (s.includes('forum') || s.includes('reddit')) return 'forums';
+    return '';
+  };
+
+  // Generate relative time
+  const getRelativeTime = (dateStr: string | null) => {
+    if (!dateStr) return 'recently';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffHours / 24);
+    if (diffDays > 7) return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    if (diffDays > 0) return diffDays + 'd';
+    if (diffHours > 0) return diffHours + 'h';
+    return 'now';
+  };
+
+  const analyzed = feedbackData.filter(f => f.analyzed_at).length;
+
   return `
-    <h1 class="page-title">All Feedback</h1>
-    <p class="page-subtitle">${feedbackData.length} items | ${feedbackData.filter(f => f.analyzed_at).length} analyzed by AI</p>
-    <div class="scroll-container">
+    <div style="text-align: center; margin-bottom: 2rem;">
+      <h1 class="page-title">Feedback Feed</h1>
+      <p class="page-subtitle">${feedbackData.length} items from users | ${analyzed} analyzed by Workers AI</p>
+    </div>
+    <div class="feed-container">
       ${feedbackData.map(f => {
         const sent = parseInt(f.sentiment || "5");
         const urg = parseInt(f.urgency || "5");
         const isAnalyzed = !!f.analyzed_at;
-        const sentClass = isAnalyzed ? (sent >= 7 ? 'sentiment-good' : sent >= 4 ? 'sentiment-ok' : 'sentiment-bad') : '';
+        const avatarColor = getAvatarColor(f.author);
+        const initials = getInitials(f.author);
+        const handle = getHandle(f.author);
+        const sourceClass = getSourceClass(f.source);
+        const relTime = getRelativeTime(f.created_at);
+
         return `
-          <div class="feedback-item ${sentClass}">
-            <div class="feedback-content">"${f.content}"</div>
-            <div class="feedback-meta">
-              <span class="badge badge-source">${f.source}</span>
-              ${isAnalyzed ? `
-                <span class="badge ${sent >= 7 ? 'score-high' : sent >= 4 ? 'score-mid' : 'score-low'}">Sent: ${sent}/10</span>
-                <span class="badge ${urg >= 7 ? 'score-low' : urg >= 4 ? 'score-mid' : 'score-high'}">Urg: ${urg}/10</span>
-              ` : '<span class="badge" style="background: #475569;">Not analyzed yet</span>'}
-              <span style="color: #64748b; font-size: 0.75rem; margin-left: auto;">— ${f.author}</span>
+          <div class="tweet">
+            <div class="tweet-header">
+              <div class="tweet-avatar" style="background: ${avatarColor};">${initials}</div>
+              <div class="tweet-main">
+                <div class="tweet-author-row">
+                  <span class="tweet-author">${f.author}</span>
+                  <span class="tweet-handle">${handle}</span>
+                  <span class="tweet-dot">·</span>
+                  <span class="tweet-time">${relTime}</span>
+                  <span class="source-tag ${sourceClass}">${f.source}</span>
+                </div>
+                <div class="tweet-content">${f.content}</div>
+                ${isAnalyzed && f.job_to_be_done ? `
+                  <div class="tweet-insight">
+                    <div class="tweet-insight-label">AI-Detected Job to be Done</div>
+                    <div class="tweet-insight-text">${f.job_to_be_done}</div>
+                  </div>
+                ` : ''}
+                ${isAnalyzed ? `
+                  <div class="tweet-metrics">
+                    <span class="tweet-metric ${sent >= 7 ? 'sentiment-high' : sent >= 4 ? 'sentiment-mid' : 'sentiment-low'}">
+                      ${sent >= 7 ? '😊' : sent >= 4 ? '😐' : '😞'} Sentiment: ${sent}/10
+                    </span>
+                    <span class="tweet-metric urgency">
+                      ${urg >= 7 ? '🔥' : urg >= 4 ? '⚡' : '💤'} Urgency: ${urg}/10
+                    </span>
+                  </div>
+                ` : `
+                  <div class="tweet-metrics">
+                    <span class="tweet-metric" style="background: rgba(100, 116, 139, 0.2); color: #94a3b8;">⏳ Pending AI analysis</span>
+                  </div>
+                `}
+                <div class="tweet-actions">
+                  <div class="tweet-action">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+                  </div>
+                  <div class="tweet-action">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+                  </div>
+                  <div class="tweet-action">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+                  </div>
+                  <div class="tweet-action">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                  </div>
+                </div>
+              </div>
             </div>
-            ${isAnalyzed && f.job_to_be_done ? `<div style="margin-top: 0.5rem; font-size: 0.8rem; color: #8b5cf6;"><strong>JTBD:</strong> ${f.job_to_be_done}</div>` : ''}
           </div>
         `;
       }).join('')}
