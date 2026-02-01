@@ -169,6 +169,47 @@ Respond with ONLY valid JSON in this exact format (no other text):
   return { sentiment: 5, urgency: 5, themes: ["general"], job_to_be_done: "Help me use the product better" };
 }
 
+// Auto-seed function (called automatically when DB is empty)
+async function autoSeedData(env: Env): Promise<void> {
+  const themeCounts: Record<string, number> = {};
+  const vectors: VectorizeVector[] = [];
+
+  for (const f of MOCK_FEEDBACK) {
+    const result = await env.DB.prepare(
+      "INSERT INTO feedback (source, content, author, url) VALUES (?, ?, ?, ?) RETURNING id"
+    ).bind(f.source, f.content, f.author, f.url).first() as { id: number };
+
+    const analysis = await analyzeWithAI(env, f.content);
+
+    await env.DB.prepare(
+      `UPDATE feedback SET sentiment = ?, themes = ?, urgency = ?, job_to_be_done = ?, analyzed_at = datetime('now') WHERE id = ?`
+    ).bind(String(analysis.sentiment), JSON.stringify(analysis.themes), String(analysis.urgency), analysis.job_to_be_done, result.id).run();
+
+    const embedding = await generateEmbedding(env, f.content);
+    if (embedding.length > 0) {
+      vectors.push({
+        id: String(result.id),
+        values: embedding,
+        metadata: { source: f.source, sentiment: analysis.sentiment, urgency: analysis.urgency, themes: analysis.themes.join(",") }
+      });
+    }
+
+    analysis.themes.forEach(t => {
+      themeCounts[t.toLowerCase()] = (themeCounts[t.toLowerCase()] || 0) + 1;
+    });
+  }
+
+  for (const [name, count] of Object.entries(themeCounts)) {
+    await env.DB.prepare(
+      `INSERT INTO themes (name, count, last_seen) VALUES (?, ?, datetime('now')) ON CONFLICT(name) DO UPDATE SET count = ?, last_seen = datetime('now')`
+    ).bind(name, count, count).run();
+  }
+
+  if (vectors.length > 0 && env.VECTORIZE) {
+    try { await env.VECTORIZE.upsert(vectors); } catch (e) { console.error("Vectorize upsert error:", e); }
+  }
+}
+
 // Seed database AND automatically analyze with Workers AI + store embeddings in Vectorize
 async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
@@ -486,11 +527,22 @@ function getNav(activePage: string): string {
 async function handleDashboard(env: Env, page: string): Promise<Response> {
   let feedbackData: FeedbackEntry[] = [];
   let stats = { total: 0, analyzed: 0, avgSentiment: 0, avgUrgency: 0, bySource: {} as Record<string, number>, topThemes: [] as any[] };
+  let isLoading = false;
 
   try {
     const result = await env.DB.prepare("SELECT * FROM feedback ORDER BY created_at DESC").all();
     feedbackData = result.results as FeedbackEntry[];
     stats.total = feedbackData.length;
+
+    // AUTO-SEED: If database is empty, automatically load and analyze mock data
+    if (stats.total === 0) {
+      isLoading = true;
+      await autoSeedData(env);
+      // Re-fetch after seeding
+      const newResult = await env.DB.prepare("SELECT * FROM feedback ORDER BY created_at DESC").all();
+      feedbackData = newResult.results as FeedbackEntry[];
+      stats.total = feedbackData.length;
+    }
 
     const analyzed = feedbackData.filter(f => f.analyzed_at);
     stats.analyzed = analyzed.length;
@@ -540,30 +592,14 @@ function getOverviewPage(feedbackData: FeedbackEntry[], stats: any): string {
     appstore: '#007aff', forum: '#22c55e', email: '#6b7280'
   };
 
-  // Show setup instructions if no data yet
+  // Data now auto-loads, this shouldn't happen but just in case
   if (stats.total === 0) {
     return `
       <h1 class="page-title">NotebookLM Feedback Aggregator</h1>
-      <p class="page-subtitle">AI-powered feedback analysis using Cloudflare Workers</p>
-
+      <p class="page-subtitle">Loading feedback data and running AI analysis...</p>
       <div class="setup-box">
-        <h2 style="color: #3b82f6; margin-bottom: 1rem;">Get Started</h2>
-        <p style="margin-bottom: 1rem;">This tool uses <strong>Workers AI (Llama 3.1)</strong> to automatically analyze customer feedback.</p>
-
-        <p style="margin: 1rem 0;"><strong>Load sample data:</strong> (AI analyzes each entry automatically)</p>
-        <div class="setup-step">curl -X POST ${typeof location !== 'undefined' ? location.origin : 'YOUR_URL'}/api/seed</div>
-
-        <p style="margin: 1rem 0;">Then refresh this page!</p>
-
-        <div style="margin-top: 1.5rem; padding: 1rem; background: #0f172a; border-radius: 8px;">
-          <h3 style="color: #8b5cf6; margin-bottom: 0.5rem;">Cloudflare Products Used:</h3>
-          <ul style="color: #94a3b8; margin-left: 1.5rem;">
-            <li><strong>Workers</strong> - Hosting this serverless application</li>
-            <li><strong>D1 Database</strong> - Storing feedback entries and analysis</li>
-            <li><strong>Workers AI</strong> - Llama 3.1 for sentiment, urgency, themes, JTBD</li>
-            <li><strong>Vectorize</strong> - Semantic similarity for clustering related feedback</li>
-          </ul>
-        </div>
+        <p>Please wait - Workers AI is analyzing feedback. This may take a moment on first load.</p>
+        <p style="margin-top: 1rem;">Refresh the page in a few seconds.</p>
       </div>
     `;
   }
