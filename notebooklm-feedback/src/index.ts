@@ -970,104 +970,124 @@ function getFeedbackPage(feedbackData: FeedbackEntry[]): string {
 
 function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
   const analyzed = feedbackData.filter(f => f.analyzed_at);
-  const painPoints = analyzed.filter(f => parseInt(f.urgency || "0") >= 7 && parseInt(f.sentiment || "10") <= 4);
 
-  // Group JTBDs
-  const jtbdGroups: Record<string, { count: number; samples: string[] }> = {};
+  // Categorize JTBDs with better grouping
+  const jtbdCategories: Record<string, { count: number; samples: string[]; feedback: FeedbackEntry[] }> = {
+    'Research & Synthesis': { count: 0, samples: [], feedback: [] },
+    'Audio Learning': { count: 0, samples: [], feedback: [] },
+    'Study & Education': { count: 0, samples: [], feedback: [] },
+    'Collaboration': { count: 0, samples: [], feedback: [] },
+    'Productivity': { count: 0, samples: [], feedback: [] },
+    'Content Creation': { count: 0, samples: [], feedback: [] },
+  };
+
   analyzed.forEach(f => {
-    if (f.job_to_be_done) {
-      const key = f.job_to_be_done.toLowerCase().includes('audio') ? 'Audio & Learning' :
-                  f.job_to_be_done.toLowerCase().includes('research') || f.job_to_be_done.toLowerCase().includes('document') ? 'Research & Synthesis' :
-                  f.job_to_be_done.toLowerCase().includes('team') || f.job_to_be_done.toLowerCase().includes('share') ? 'Collaboration' :
-                  f.job_to_be_done.toLowerCase().includes('trust') || f.job_to_be_done.toLowerCase().includes('accurate') ? 'Trust & Accuracy' :
-                  'Other';
-      if (!jtbdGroups[key]) jtbdGroups[key] = { count: 0, samples: [] };
-      jtbdGroups[key].count++;
-      if (jtbdGroups[key].samples.length < 2) jtbdGroups[key].samples.push(f.job_to_be_done);
+    if (!f.job_to_be_done) return;
+    const jtbd = f.job_to_be_done.toLowerCase();
+
+    let category = 'Productivity'; // default
+    if (jtbd.includes('research') || jtbd.includes('paper') || jtbd.includes('document') || jtbd.includes('synthesiz')) {
+      category = 'Research & Synthesis';
+    } else if (jtbd.includes('audio') || jtbd.includes('listen') || jtbd.includes('podcast')) {
+      category = 'Audio Learning';
+    } else if (jtbd.includes('study') || jtbd.includes('learn') || jtbd.includes('school') || jtbd.includes('exam') || jtbd.includes('course')) {
+      category = 'Study & Education';
+    } else if (jtbd.includes('team') || jtbd.includes('share') || jtbd.includes('collaborat')) {
+      category = 'Collaboration';
+    } else if (jtbd.includes('creat') || jtbd.includes('write') || jtbd.includes('content')) {
+      category = 'Content Creation';
     }
+
+    jtbdCategories[category].count++;
+    if (jtbdCategories[category].samples.length < 3) {
+      jtbdCategories[category].samples.push(f.job_to_be_done);
+    }
+    jtbdCategories[category].feedback.push(f);
   });
 
-  return `
-    <h1 class="page-title">JTBD Insights</h1>
-    <p class="page-subtitle">AI-extracted jobs-to-be-done from ${analyzed.length} analyzed feedback items</p>
+  // Sort by count
+  const sortedCategories = Object.entries(jtbdCategories)
+    .filter(([_, data]) => data.count > 0)
+    .sort((a, b) => b[1].count - a[1].count);
 
+  const icons: Record<string, string> = {
+    'Research & Synthesis': '🔬',
+    'Audio Learning': '🎧',
+    'Study & Education': '📚',
+    'Collaboration': '👥',
+    'Productivity': '⚡',
+    'Content Creation': '✍️',
+  };
+
+  return `
+    <h1 class="page-title">Why Users Hire NotebookLM</h1>
+    <p class="page-subtitle">Jobs-to-be-done analysis from ${analyzed.length} feedback items (extracted by <strong>Workers AI</strong>)</p>
+
+    <div class="card full-width" style="margin-bottom: 2rem; background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%); border-color: #3b82f6;">
+      <h2 style="color: #3b82f6;">Key Insight</h2>
+      <p style="font-size: 1.1rem; line-height: 1.6;">
+        ${sortedCategories.length > 0 ?
+          `Users primarily hire NotebookLM for <strong style="color: #8b5cf6;">${sortedCategories[0][0]}</strong> (${Math.round(sortedCategories[0][1].count / analyzed.length * 100)}% of feedback).
+          ${sortedCategories.length > 1 ? `Secondary use cases include <strong>${sortedCategories[1][0]}</strong> and <strong>${sortedCategories.length > 2 ? sortedCategories[2][0] : ''}</strong>.` : ''}`
+          : 'No JTBD data available yet.'}
+      </p>
+    </div>
+
+    <h2 style="margin-bottom: 1rem;">Job Categories</h2>
     <div class="grid">
-      ${Object.entries(jtbdGroups).sort((a, b) => b[1].count - a[1].count).map(([name, data], i) => `
+      ${sortedCategories.map(([name, data]) => `
         <div class="jtbd-card">
-          <div class="jtbd-icon">${['📚', '🎧', '👥', '🔒', '⚡'][i] || '💡'}</div>
+          <div class="jtbd-icon">${icons[name] || '💡'}</div>
           <div class="jtbd-title">${name}</div>
-          <div class="jtbd-desc">${data.samples[0] || ''}</div>
-          <div style="color: #8b5cf6; font-size: 0.75rem; margin-top: 0.5rem;">${data.count} mentions (${Math.round(data.count / analyzed.length * 100)}%)</div>
+          <div style="font-size: 2rem; font-weight: bold; color: #8b5cf6; margin: 0.5rem 0;">${Math.round(data.count / analyzed.length * 100)}%</div>
+          <div class="jtbd-desc">${data.count} mentions</div>
+          <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #334155;">
+            <div style="font-size: 0.8rem; color: #64748b; margin-bottom: 0.5rem;">Example jobs:</div>
+            ${data.samples.slice(0, 2).map(s => `<p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem; font-style: italic;">"${s}"</p>`).join('')}
+          </div>
         </div>
       `).join('')}
     </div>
 
-    <div class="card" style="margin-top: 2rem;">
-      <h2>Semantic Search (Powered by Vectorize)</h2>
-      <p style="color: #64748b; margin-bottom: 1rem; font-size: 0.85rem;">Find semantically similar feedback using AI embeddings</p>
-      <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
-        <input type="text" id="searchQuery" placeholder="e.g., audio quality problems, collaboration features..."
-               style="flex: 1; padding: 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 1rem;">
-        <button onclick="searchSimilar()" class="btn">Search</button>
+    <div class="card full-width" style="margin-top: 2rem;">
+      <h2>All Extracted Jobs-to-be-Done</h2>
+      <p style="color: #64748b; margin-bottom: 1rem; font-size: 0.85rem;">Every JTBD extracted by Workers AI from user feedback</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+        ${analyzed.filter(f => f.job_to_be_done).slice(0, 20).map(f => {
+          const sent = parseInt(f.sentiment || "5");
+          const color = sent >= 7 ? '#22c55e' : sent >= 4 ? '#eab308' : '#ef4444';
+          return `<div style="background: #0f172a; padding: 0.5rem 1rem; border-radius: 20px; border-left: 3px solid ${color}; font-size: 0.85rem;">${f.job_to_be_done}</div>`;
+        }).join('')}
       </div>
-      <div id="searchResults" style="min-height: 100px;"></div>
     </div>
 
-    <div class="card" style="margin-top: 2rem;">
-      <h2>Critical Pain Points (High Urgency + Low Sentiment)</h2>
-      <p style="color: #64748b; margin-bottom: 1rem; font-size: 0.85rem;">Issues that need immediate PM attention</p>
-      ${painPoints.length > 0 ? painPoints.slice(0, 5).map(f => `
-        <div class="feedback-item sentiment-bad">
-          <div class="feedback-content">"${f.content}"</div>
-          <div class="feedback-meta">
-            <span class="badge badge-source">${f.source}</span>
-            <span class="badge score-low">Sent: ${f.sentiment}/10</span>
-            <span class="badge score-low">Urg: ${f.urgency}/10</span>
-          </div>
-          ${f.job_to_be_done ? `<div style="margin-top: 0.5rem; font-size: 0.8rem; color: #8b5cf6;"><strong>JTBD:</strong> ${f.job_to_be_done}</div>` : ''}
-        </div>
-      `).join('') : '<p style="color: #64748b;">No critical pain points found. Run /api/seed first.</p>'}
+    <div class="card full-width" style="margin-top: 2rem;">
+      <h2>JTBD Distribution</h2>
+      <div class="chart-container" style="height: 300px;"><canvas id="jtbdChart"></canvas></div>
     </div>
 
     <script>
-    async function searchSimilar() {
-      const query = document.getElementById('searchQuery').value;
-      const resultsDiv = document.getElementById('searchResults');
-      if (!query) return;
-
-      resultsDiv.innerHTML = '<p style="color: #64748b;">Searching with Vectorize...</p>';
-
-      try {
-        const res = await fetch('/api/similar?q=' + encodeURIComponent(query));
-        const data = await res.json();
-
-        if (data.error) {
-          resultsDiv.innerHTML = '<p style="color: #ef4444;">' + data.error + '</p>';
-          return;
+    const jtbdData = ${JSON.stringify(sortedCategories.map(([name, data]) => ({ name, count: data.count })))};
+    new Chart(document.getElementById('jtbdChart'), {
+      type: 'bar',
+      data: {
+        labels: jtbdData.map(d => d.name),
+        datasets: [{
+          label: 'Feedback Count',
+          data: jtbdData.map(d => d.count),
+          backgroundColor: ['#8b5cf6', '#6366f1', '#3b82f6', '#0ea5e9', '#14b8a6', '#22c55e'],
+          borderRadius: 8
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
+          x: { ticks: { color: '#94a3b8' }, grid: { display: false } }
         }
-
-        if (data.results.length === 0) {
-          resultsDiv.innerHTML = '<p style="color: #64748b;">No similar feedback found. Try different keywords.</p>';
-          return;
-        }
-
-        resultsDiv.innerHTML = data.results.map(f => \`
-          <div class="feedback-item" style="border-left-color: #8b5cf6;">
-            <div class="feedback-content">"\${f.content}"</div>
-            <div class="feedback-meta">
-              <span class="badge badge-source">\${f.source}</span>
-              <span class="badge" style="background: rgba(139, 92, 246, 0.2); color: #8b5cf6;">Similarity: \${Math.round(f.similarity * 100)}%</span>
-              <span style="color: #64748b; font-size: 0.75rem; margin-left: auto;">— \${f.author}</span>
-            </div>
-          </div>
-        \`).join('');
-      } catch (e) {
-        resultsDiv.innerHTML = '<p style="color: #ef4444;">Search failed: ' + e.message + '</p>';
       }
-    }
-
-    document.getElementById('searchQuery').addEventListener('keypress', function(e) {
-      if (e.key === 'Enter') searchSimilar();
     });
     </script>
   `;
