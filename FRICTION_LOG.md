@@ -93,6 +93,30 @@ Combined with the ARM64/cleanup issues, this makes the CLI essentially unusable 
 
 ---
 
+## Friction Point #4: Wrangler Dev Server Doesn't Hot-Reload Reliably
+
+**Product**: Cloudflare Workers / Wrangler CLI
+
+**Title**: Code changes not reflected without manual server restart
+
+**Problem**:
+After updating `src/index.ts` to add new API endpoints (`/api/feedback`, `/api/stats`), the running `npx wrangler dev` server continued to return 404 for these routes. The server did not automatically pick up the code changes despite being in "watch" mode.
+
+Had to manually stop the server (press `x`) and restart it to see the updated code.
+
+**Impact**:
+- Slows down development iteration
+- Confusing for developers who expect hot-reload to work
+- Leads to debugging phantom issues (thinking code is wrong when it's just not reloaded)
+
+**Suggestion**:
+1. Improve file watching to reliably detect changes in src/ directory
+2. Add a visual indicator when code changes are detected and being recompiled
+3. Show a clear message like "Code changed, reloading..." in the terminal
+4. Add a manual reload shortcut (e.g., press `r` to reload) as a fallback
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -122,13 +146,13 @@ Combined with the ARM64/cleanup issues, this makes the CLI essentially unusable 
 
 | Category | Count |
 |----------|-------|
-| CLI/Tooling | 3 |
+| CLI/Tooling | 4 |
 | Documentation | 0 |
 | Dashboard UI | 0 |
 | API/SDK | 0 |
 | Error Messages | 0 |
 
-**Total Friction Points**: 3
+**Total Friction Points**: 4
 
 ---
 
