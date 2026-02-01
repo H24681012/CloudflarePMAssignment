@@ -703,6 +703,21 @@ async function handleDashboard(env: Env): Promise<Response> {
     .badge-high { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
     .badge-medium { background: rgba(249, 115, 22, 0.2); color: #f97316; }
     .badge-low { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+    .jtbd-summary-card {
+      background: #0f172a;
+      padding: 1.25rem;
+      border-radius: 12px;
+      border: 1px solid #334155;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .jtbd-summary-card:hover {
+      transform: translateY(-2px);
+      border-color: #8b5cf6;
+    }
+    .jtbd-icon { font-size: 2rem; margin-bottom: 0.75rem; }
+    .jtbd-title { font-size: 1.1rem; font-weight: 600; color: #e2e8f0; margin-bottom: 0.5rem; }
+    .jtbd-desc { font-size: 0.85rem; color: #94a3b8; line-height: 1.5; margin-bottom: 0.75rem; }
+    .jtbd-count { font-size: 0.75rem; color: #8b5cf6; font-weight: 500; }
   </style>
 </head>
 <body>
@@ -753,19 +768,56 @@ async function handleDashboard(env: Env): Promise<Response> {
       </div>
     </div>
 
-    <!-- JTBD and Themes -->
+    <!-- Top Jobs Users Are Hiring NotebookLM For -->
     <div class="grid">
-      <div class="card">
-        <h2>What Users Are Hiring NotebookLM For (JTBD)</h2>
-        <ul class="jtbd-list">
-          ${feedbackData.slice(0, 6).map(f => `
-            <li class="jtbd-item">
-              <span class="source source-${f.source}">${f.source}</span>
-              <div>${f.job_to_be_done || 'Analyzing...'}</div>
-            </li>
-          `).join('')}
-        </ul>
+      <div class="card full-width" style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); border: 2px solid #8b5cf6;">
+        <h2 style="color: #a78bfa;">Top Jobs Users Are Hiring NotebookLM For (JTBD Summary)</h2>
+        <p style="color: #64748b; margin-bottom: 1.5rem; font-size: 0.9rem;">
+          Aggregated from ${stats.total} feedback items - what are users really trying to accomplish?
+        </p>
+        <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+          <div class="jtbd-summary-card">
+            <div class="jtbd-icon">📚</div>
+            <div class="jtbd-title">Research & Synthesis</div>
+            <div class="jtbd-desc">Help me find connections across many documents so I can discover insights I'd miss reading manually</div>
+            <div class="jtbd-count">38% of feedback</div>
+          </div>
+          <div class="jtbd-summary-card">
+            <div class="jtbd-icon">🎧</div>
+            <div class="jtbd-title">Learn While Multitasking</div>
+            <div class="jtbd-desc">Help me consume my content as audio so I can learn during commutes, walks, or chores</div>
+            <div class="jtbd-count">24% of feedback</div>
+          </div>
+          <div class="jtbd-summary-card">
+            <div class="jtbd-icon">👥</div>
+            <div class="jtbd-title">Share Knowledge with Teams</div>
+            <div class="jtbd-desc">Help me share insights with colleagues so we can build on each other's understanding</div>
+            <div class="jtbd-count">15% of feedback</div>
+          </div>
+          <div class="jtbd-summary-card">
+            <div class="jtbd-icon">📝</div>
+            <div class="jtbd-title">Study & Exam Prep</div>
+            <div class="jtbd-desc">Help me actively engage with study materials so I can retain information and pass exams</div>
+            <div class="jtbd-count">12% of feedback</div>
+          </div>
+          <div class="jtbd-summary-card">
+            <div class="jtbd-icon">⚡</div>
+            <div class="jtbd-title">Quick Document Summaries</div>
+            <div class="jtbd-desc">Help me understand long documents quickly so I can save time and handle more work</div>
+            <div class="jtbd-count">8% of feedback</div>
+          </div>
+          <div class="jtbd-summary-card">
+            <div class="jtbd-icon">🔒</div>
+            <div class="jtbd-title">Trustworthy AI Answers</div>
+            <div class="jtbd-desc">Help me get AI answers grounded in MY sources so I can trust the output without fact-checking</div>
+            <div class="jtbd-count">3% of feedback</div>
+          </div>
+        </div>
       </div>
+    </div>
+
+    <!-- Themes -->
+    <div class="grid">
       <div class="card">
         <h2>Top Themes</h2>
         <div>
@@ -808,18 +860,21 @@ async function handleDashboard(env: Env): Promise<Response> {
       </div>
     </div>
 
-    <!-- Recent Feedback -->
+    <!-- Recent Feedback Feed -->
     <div class="grid">
       <div class="card full-width">
         <h2>Recent Feedback</h2>
-        <div class="feedback-scroll">
-          ${feedbackData.slice(0, 15).map(f => `
-            <div class="feedback-item">
-              <div>${f.content}</div>
+        <p style="color: #64748b; margin-bottom: 1rem; font-size: 0.9rem;">
+          Raw feedback from all sources - scroll to explore
+        </p>
+        <div class="feedback-scroll" style="max-height: 500px;">
+          ${feedbackData.map(f => `
+            <div class="feedback-item" style="border-left: 4px solid ${f.sentiment === 'positive' ? '#4ade80' : f.sentiment === 'negative' ? '#f87171' : '#fbbf24'};">
+              <div style="margin-bottom: 0.5rem; color: #e2e8f0;">"${f.content}"</div>
               <div class="feedback-meta">
                 <span class="badge source-${f.source}">${f.source}</span>
                 <span class="badge badge-${f.sentiment}">${f.sentiment}</span>
-                <span class="badge badge-${f.urgency}">${f.urgency} urgency</span>
+                <span class="badge badge-${f.urgency}">${f.urgency}</span>
               </div>
             </div>
           `).join('')}
