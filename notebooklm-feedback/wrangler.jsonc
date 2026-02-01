@@ -8,19 +8,17 @@
     "enabled": true
   },
 
-  // D1 Database binding - will be configured after creating the database
-  // Uncomment after running: npx wrangler d1 create notebooklm-feedback-db
-  // "d1_databases": [
-  //   {
-  //     "binding": "DB",
-  //     "database_name": "notebooklm-feedback-db",
-  //     "database_id": "YOUR_DATABASE_ID_HERE"
-  //   }
-  // ],
+  // D1 Database binding
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "notebooklm-feedback-db",
+      "database_id": "ca6bf71b-5131-46fc-8bd3-09e54a9313d1"
+    }
+  ],
 
   // Workers AI binding - for sentiment analysis
-  // Uncomment when ready to add AI features
-  // "ai": {
-  //   "binding": "AI"
-  // }
+  "ai": {
+    "binding": "AI"
+  }
 }
