@@ -1,0 +1,20 @@
+{
+  "name": "notebooklm-feedback",
+  "version": "1.0.0",
+  "description": "NotebookLM Feedback Aggregator - Cloudflare PM Assignment",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --remote",
+    "dev:local": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "cf-typegen": "wrangler types"
+  },
+  "keywords": ["cloudflare", "workers", "feedback", "notebooklm"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "typescript": "^5.5.2",
+    "wrangler": "^4.61.1"
+  }
+}

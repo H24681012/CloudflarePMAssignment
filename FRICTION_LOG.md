@@ -61,6 +61,79 @@ This leaves a corrupted/partial project folder that's difficult to remove and ca
 
 ---
 
+## Friction Point #3: npx Wrangler Install Loop
+
+**Product**: Cloudflare Workers / Wrangler CLI / npx
+
+**Title**: npx repeatedly prompts to install wrangler, never caches it
+
+**Problem**:
+Every time you run any `npx wrangler` command, it prompts:
+```
+Need to install the following packages:
+wrangler@4.61.1
+Ok to proceed? (y)
+```
+
+After pressing `y`, it installs, shows cleanup errors, then the next command asks to install again. This creates an infinite loop where wrangler never stays installed.
+
+Combined with the ARM64/cleanup issues, this makes the CLI essentially unusable on affected systems.
+
+**Impact**:
+- Cannot run any wrangler commands
+- Complete blocker for development
+- Extremely frustrating user experience
+- Wasted time re-downloading the same package repeatedly
+
+**Suggestion**:
+1. Fix the underlying caching issue so npx remembers installed packages
+2. Recommend installing wrangler globally (`npm install -g wrangler`) in the getting started docs
+3. Add a troubleshooting section for this common issue
+4. Consider bundling wrangler differently to avoid npx caching problems
+
+---
+
+## Friction Point #4: Windows ARM64 Requires WSL Workaround
+
+**Product**: Cloudflare Workers / Wrangler CLI / Developer Onboarding
+
+**Title**: ARM64 Windows developers forced to use WSL with no official guidance
+
+**Problem**:
+The combination of issues #1-3 means that Windows ARM64 users cannot use Cloudflare Workers natively at all. The only workaround is to:
+1. Install WSL (Windows Subsystem for Linux)
+2. Set up a complete Linux environment inside Windows
+3. Install Node.js again in WSL
+4. Clone projects into WSL filesystem
+5. Run all development from WSL terminal
+
+This workaround is not documented anywhere in Cloudflare's getting started guides. Users must discover it through trial and error or external help.
+
+**Impact**:
+- 30+ minutes lost troubleshooting before discovering WSL is required
+- Complete setup flow must be restarted in a different environment
+- Beginners may give up entirely, thinking Cloudflare doesn't support their device
+- Growing market segment (ARM laptops, Surface devices) effectively unsupported
+- Poor first impression of Cloudflare developer experience
+
+**Suggestion**:
+1. Add platform detection at the START of `npm create cloudflare`:
+   ```
+   ⚠️  Windows ARM64 detected. Native support coming soon!
+
+   For now, please use WSL (Windows Subsystem for Linux):
+   1. Run: wsl --install
+   2. Restart your computer
+   3. Open Ubuntu and run this command again
+
+   Learn more: https://developers.cloudflare.com/workers/wsl-setup
+   ```
+2. Create a dedicated "Windows ARM64 Setup Guide" in documentation
+3. Prioritize ARM64 Windows support in workerd roadmap
+4. Add ARM64 compatibility status to the Workers documentation homepage
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -90,13 +163,13 @@ This leaves a corrupted/partial project folder that's difficult to remove and ca
 
 | Category | Count |
 |----------|-------|
-| CLI/Tooling | 2 |
-| Documentation | 0 |
+| CLI/Tooling | 3 |
+| Documentation | 1 |
 | Dashboard UI | 0 |
 | API/SDK | 0 |
 | Error Messages | 0 |
 
-**Total Friction Points**: 2
+**Total Friction Points**: 4
 
 ---
 
