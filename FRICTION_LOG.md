@@ -93,27 +93,26 @@ Combined with the ARM64/cleanup issues, this makes the CLI essentially unusable 
 
 ---
 
-## Friction Point #4: Wrangler Dev Server Doesn't Hot-Reload Reliably
+## Friction Point #4: Local Server Doesn't Update When I Change Code
 
-**Product**: Cloudflare Workers / Wrangler CLI
+**Product**: Wrangler CLI (local development server)
 
-**Title**: Code changes not reflected without manual server restart
+**Title**: Had to restart the server manually to see my code changes
 
 **Problem**:
-After updating `src/index.ts` to add new API endpoints (`/api/feedback`, `/api/stats`), the running `npx wrangler dev` server continued to return 404 for these routes. The server did not automatically pick up the code changes despite being in "watch" mode.
+I edited my code to add new features, but when I tested them in the browser, they weren't there. The local development server was supposed to automatically detect my changes and reload, but it didn't. I spent time wondering if my code was broken before realizing the server just wasn't picking up the changes.
 
-Had to manually stop the server (press `x`) and restart it to see the updated code.
+I had to manually stop the server and start it again to see my updates.
 
 **Impact**:
-- Slows down development iteration
-- Confusing for developers who expect hot-reload to work
-- Leads to debugging phantom issues (thinking code is wrong when it's just not reloaded)
+- Wasted time debugging code that was actually fine
+- Frustrating when you expect "save and refresh" to just work
+- Breaks the development flow - you lose momentum stopping and restarting
 
 **Suggestion**:
-1. Improve file watching to reliably detect changes in src/ directory
-2. Add a visual indicator when code changes are detected and being recompiled
-3. Show a clear message like "Code changed, reloading..." in the terminal
-4. Add a manual reload shortcut (e.g., press `r` to reload) as a fallback
+1. Make the auto-reload actually work when files change
+2. Show a message in the terminal like "Detected changes, reloading..." so I know it's working
+3. Add a keyboard shortcut (like pressing `r`) to manually trigger a reload without fully restarting
 
 ---
 
