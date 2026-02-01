@@ -37,12 +37,20 @@ This document tracks every step taken while building the prototype, with reasoni
 ### Step 7: Run Database Migration
 **Command**: `npx wrangler d1 execute notebooklm-feedback-db --file=./schema.sql --local`
 **Why**: Creates the `feedback` and `themes` tables in the local database. Schema includes fields for source, content, sentiment, themes, and urgency.
-**Status**: PENDING
+**Result**: 6 commands executed successfully (2 CREATE TABLE + 4 CREATE INDEX)
+**Status**: COMPLETE
 
 ### Step 8: Update Worker to Use D1
 **Action**: Wire up the D1 binding in src/index.ts
-**Why**: Need to uncomment the DB binding in the Env interface and add API endpoints for CRUD operations.
-**Status**: PENDING
+**Why**: Need to enable the DB binding in the Env interface and add API endpoints for CRUD operations.
+**Changes made**:
+- Added `notebooklm_feedback_db: D1Database` to Env interface
+- Added GET /api/feedback endpoint (list feedback with filtering)
+- Added POST /api/feedback endpoint (add new feedback)
+- Added GET /api/stats endpoint (feedback statistics)
+- Added CORS headers for cross-origin requests
+- Added input validation for source types
+**Status**: COMPLETE
 
 ### Step 9: Add Workers AI Binding
 **Action**: Enable AI binding in wrangler.jsonc
