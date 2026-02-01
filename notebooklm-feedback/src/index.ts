@@ -5,11 +5,13 @@
  * - Workers: Hosting and API endpoints
  * - D1 Database: Store feedback and analysis results
  * - Workers AI (Llama 3.1): Sentiment analysis, theme extraction, urgency scoring
+ * - Vectorize: Semantic similarity search for clustering related feedback
  */
 
 export interface Env {
   DB: D1Database;
   AI: Ai;
+  VECTORIZE: Vectorize;
 }
 
 interface FeedbackEntry {
@@ -99,6 +101,8 @@ export default {
           return handleFeedbackAPI(env, corsHeaders);
         case "/api/stats":
           return handleStats(env, corsHeaders);
+        case "/api/similar":
+          return handleSimilar(request, env, corsHeaders);
         default:
           return new Response("Not Found", { status: 404 });
       }
@@ -108,6 +112,19 @@ export default {
     }
   },
 };
+
+// Generate embeddings using Workers AI for Vectorize
+async function generateEmbedding(env: Env, text: string): Promise<number[]> {
+  try {
+    const response = await env.AI.run("@cf/baai/bge-base-en-v1.5", {
+      text: text.substring(0, 512) // Limit text length for embedding model
+    });
+    return (response as any).data?.[0] || [];
+  } catch (e) {
+    console.error("Embedding error:", e);
+    return [];
+  }
+}
 
 // Use Workers AI (Llama 3.1) to analyze feedback
 async function analyzeWithAI(env: Env, content: string): Promise<AIAnalysis> {
@@ -152,7 +169,7 @@ Respond with ONLY valid JSON in this exact format (no other text):
   return { sentiment: 5, urgency: 5, themes: ["general"], job_to_be_done: "Help me use the product better" };
 }
 
-// Seed database AND automatically analyze with Workers AI
+// Seed database AND automatically analyze with Workers AI + store embeddings in Vectorize
 async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     await env.DB.prepare("DELETE FROM feedback").run();
@@ -160,7 +177,9 @@ async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promis
 
     let inserted = 0;
     let analyzed = 0;
+    let embedded = 0;
     const themeCounts: Record<string, number> = {};
+    const vectors: VectorizeVector[] = [];
 
     for (const f of MOCK_FEEDBACK) {
       // Insert raw feedback
@@ -186,6 +205,22 @@ async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promis
       ).run();
       analyzed++;
 
+      // Generate embedding for Vectorize (semantic similarity)
+      const embedding = await generateEmbedding(env, f.content);
+      if (embedding.length > 0) {
+        vectors.push({
+          id: String(result.id),
+          values: embedding,
+          metadata: {
+            source: f.source,
+            sentiment: analysis.sentiment,
+            urgency: analysis.urgency,
+            themes: analysis.themes.join(",")
+          }
+        });
+        embedded++;
+      }
+
       // Count themes for aggregation
       analysis.themes.forEach(t => {
         themeCounts[t.toLowerCase()] = (themeCounts[t.toLowerCase()] || 0) + 1;
@@ -200,12 +235,23 @@ async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promis
       ).bind(name, count, count).run();
     }
 
+    // Batch insert vectors into Vectorize
+    if (vectors.length > 0 && env.VECTORIZE) {
+      try {
+        await env.VECTORIZE.upsert(vectors);
+      } catch (e) {
+        console.error("Vectorize upsert error:", e);
+      }
+    }
+
     return Response.json({
       success: true,
-      message: `Loaded and analyzed ${analyzed} feedback entries using Workers AI (Llama 3.1)`,
+      message: `Loaded and analyzed ${analyzed} feedback entries with AI + Vectorize`,
       inserted,
       analyzed,
+      embedded,
       ai_model: "@cf/meta/llama-3.1-8b-instruct",
+      embedding_model: "@cf/baai/bge-base-en-v1.5",
       themes_extracted: Object.keys(themeCounts).length
     }, { headers: corsHeaders });
   } catch (error) {
@@ -308,6 +354,69 @@ async function handleStats(env: Env, corsHeaders: Record<string, string>): Promi
     bySource,
     topThemes: themes.results
   }, { headers: corsHeaders });
+}
+
+// API: Find semantically similar feedback using Vectorize
+async function handleSimilar(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const url = new URL(request.url);
+  const query = url.searchParams.get("q") || "";
+  const feedbackId = url.searchParams.get("id");
+
+  if (!query && !feedbackId) {
+    return Response.json({
+      error: "Provide ?q=search+text or ?id=feedbackId",
+      example: "/api/similar?q=audio+quality+issues"
+    }, { status: 400, headers: corsHeaders });
+  }
+
+  try {
+    let queryVector: number[] = [];
+
+    if (feedbackId) {
+      // Find similar to existing feedback by ID
+      const result = await env.DB.prepare("SELECT content FROM feedback WHERE id = ?").bind(feedbackId).first() as { content: string } | null;
+      if (!result) {
+        return Response.json({ error: "Feedback not found" }, { status: 404, headers: corsHeaders });
+      }
+      queryVector = await generateEmbedding(env, result.content);
+    } else {
+      // Find similar to query text
+      queryVector = await generateEmbedding(env, query);
+    }
+
+    if (queryVector.length === 0) {
+      return Response.json({ error: "Failed to generate embedding" }, { status: 500, headers: corsHeaders });
+    }
+
+    // Query Vectorize for similar feedback
+    const matches = await env.VECTORIZE.query(queryVector, {
+      topK: 5,
+      returnMetadata: "all"
+    });
+
+    // Fetch full feedback details for matches
+    const similarFeedback = [];
+    for (const match of matches.matches) {
+      const id = parseInt(match.id);
+      if (feedbackId && id === parseInt(feedbackId)) continue; // Skip self
+
+      const fb = await env.DB.prepare("SELECT * FROM feedback WHERE id = ?").bind(id).first() as FeedbackEntry | null;
+      if (fb) {
+        similarFeedback.push({
+          ...fb,
+          similarity: Math.round(match.score * 100) / 100
+        });
+      }
+    }
+
+    return Response.json({
+      query: query || `Feedback #${feedbackId}`,
+      results: similarFeedback,
+      count: similarFeedback.length
+    }, { headers: corsHeaders });
+  } catch (error) {
+    return Response.json({ error: String(error) }, { status: 500, headers: corsHeaders });
+  }
 }
 
 // Shared styles
@@ -449,9 +558,10 @@ function getOverviewPage(feedbackData: FeedbackEntry[], stats: any): string {
         <div style="margin-top: 1.5rem; padding: 1rem; background: #0f172a; border-radius: 8px;">
           <h3 style="color: #8b5cf6; margin-bottom: 0.5rem;">Cloudflare Products Used:</h3>
           <ul style="color: #94a3b8; margin-left: 1.5rem;">
-            <li><strong>Workers</strong> - Hosting this application</li>
-            <li><strong>D1 Database</strong> - Storing feedback entries</li>
-            <li><strong>Workers AI</strong> - Llama 3.1 for sentiment, urgency, themes</li>
+            <li><strong>Workers</strong> - Hosting this serverless application</li>
+            <li><strong>D1 Database</strong> - Storing feedback entries and analysis</li>
+            <li><strong>Workers AI</strong> - Llama 3.1 for sentiment, urgency, themes, JTBD</li>
+            <li><strong>Vectorize</strong> - Semantic similarity for clustering related feedback</li>
           </ul>
         </div>
       </div>
@@ -622,6 +732,17 @@ function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
     </div>
 
     <div class="card" style="margin-top: 2rem;">
+      <h2>Semantic Search (Powered by Vectorize)</h2>
+      <p style="color: #64748b; margin-bottom: 1rem; font-size: 0.85rem;">Find semantically similar feedback using AI embeddings</p>
+      <div style="display: flex; gap: 1rem; margin-bottom: 1rem;">
+        <input type="text" id="searchQuery" placeholder="e.g., audio quality problems, collaboration features..."
+               style="flex: 1; padding: 0.75rem; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 1rem;">
+        <button onclick="searchSimilar()" class="btn">Search</button>
+      </div>
+      <div id="searchResults" style="min-height: 100px;"></div>
+    </div>
+
+    <div class="card" style="margin-top: 2rem;">
       <h2>Critical Pain Points (High Urgency + Low Sentiment)</h2>
       <p style="color: #64748b; margin-bottom: 1rem; font-size: 0.85rem;">Issues that need immediate PM attention</p>
       ${painPoints.length > 0 ? painPoints.slice(0, 5).map(f => `
@@ -634,7 +755,49 @@ function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
           </div>
           ${f.job_to_be_done ? `<div style="margin-top: 0.5rem; font-size: 0.8rem; color: #8b5cf6;"><strong>JTBD:</strong> ${f.job_to_be_done}</div>` : ''}
         </div>
-      `).join('') : '<p style="color: #64748b;">No critical pain points found. Run /api/analyze first.</p>'}
+      `).join('') : '<p style="color: #64748b;">No critical pain points found. Run /api/seed first.</p>'}
     </div>
+
+    <script>
+    async function searchSimilar() {
+      const query = document.getElementById('searchQuery').value;
+      const resultsDiv = document.getElementById('searchResults');
+      if (!query) return;
+
+      resultsDiv.innerHTML = '<p style="color: #64748b;">Searching with Vectorize...</p>';
+
+      try {
+        const res = await fetch('/api/similar?q=' + encodeURIComponent(query));
+        const data = await res.json();
+
+        if (data.error) {
+          resultsDiv.innerHTML = '<p style="color: #ef4444;">' + data.error + '</p>';
+          return;
+        }
+
+        if (data.results.length === 0) {
+          resultsDiv.innerHTML = '<p style="color: #64748b;">No similar feedback found. Try different keywords.</p>';
+          return;
+        }
+
+        resultsDiv.innerHTML = data.results.map(f => \`
+          <div class="feedback-item" style="border-left-color: #8b5cf6;">
+            <div class="feedback-content">"\${f.content}"</div>
+            <div class="feedback-meta">
+              <span class="badge badge-source">\${f.source}</span>
+              <span class="badge" style="background: rgba(139, 92, 246, 0.2); color: #8b5cf6;">Similarity: \${Math.round(f.similarity * 100)}%</span>
+              <span style="color: #64748b; font-size: 0.75rem; margin-left: auto;">— \${f.author}</span>
+            </div>
+          </div>
+        \`).join('');
+      } catch (e) {
+        resultsDiv.innerHTML = '<p style="color: #ef4444;">Search failed: ' + e.message + '</p>';
+      }
+    }
+
+    document.getElementById('searchQuery').addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') searchSimilar();
+    });
+    </script>
   `;
 }

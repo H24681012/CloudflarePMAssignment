@@ -17,8 +17,16 @@
     }
   ],
 
-  // Workers AI binding - for sentiment analysis
+  // Workers AI binding - for sentiment analysis and embeddings
   "ai": {
     "binding": "AI"
-  }
+  },
+
+  // Vectorize binding - for semantic similarity search
+  "vectorize": [
+    {
+      "binding": "VECTORIZE",
+      "index_name": "feedback-embeddings"
+    }
+  ]
 }
