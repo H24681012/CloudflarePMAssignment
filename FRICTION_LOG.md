@@ -134,6 +134,29 @@ This workaround is not documented anywhere in Cloudflare's getting started guide
 
 ---
 
+## Friction Point #5: Local and Remote Databases Don't Talk to Each Other
+
+**Product**: D1 Database / Wrangler CLI
+
+**Title**: Running migrations locally doesn't set up the remote database
+
+**Problem**:
+I spent time setting up my database schema using `--local` mode, and everything worked fine. Then when I switched to `--remote` mode to test with real Cloudflare services, I got a confusing error: "no such table: feedback".
+
+Turns out, the local D1 database and the remote D1 database are completely separate. Any tables I created locally don't exist on the remote version. There's no warning when you switch modes, and the error message doesn't hint at what's actually wrong.
+
+**Impact**:
+- Wasted 15+ minutes trying to figure out why my tables disappeared
+- Had to re-run all my database setup commands with the `--remote` flag
+- Really confusing for someone new to Cloudflare who doesn't know about this local/remote split
+
+**Suggestion**:
+1. When switching between local and remote modes, show a heads-up like: "Note: Local and remote databases are separate. Make sure you've run your migrations on both."
+2. Better error message: Instead of just "no such table", say something like "Table 'feedback' not found. If you set up tables locally, you may need to run migrations with --remote too."
+3. Maybe add a `wrangler d1 sync` command that copies your local schema to remote (or vice versa)
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -165,11 +188,11 @@ This workaround is not documented anywhere in Cloudflare's getting started guide
 |----------|-------|
 | CLI/Tooling | 3 |
 | Documentation | 1 |
+| D1 Database | 1 |
 | Dashboard UI | 0 |
 | API/SDK | 0 |
-| Error Messages | 0 |
 
-**Total Friction Points**: 4
+**Total Friction Points**: 5
 
 ---
 
