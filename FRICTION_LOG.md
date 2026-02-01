@@ -232,6 +232,85 @@ To actually send emails, I'd have to sign up for a third-party service like Send
 
 ---
 
+## Friction Point #9: API Token Permissions Are Confusing
+
+**Product**: Cloudflare Dashboard / API Tokens
+
+**Title**: Unclear which permission level (Read vs Edit) is needed for each product
+
+**Problem**:
+When creating an API token for deployment, it's not obvious which permission level each product needs:
+- Vectorize requires **Edit** to call `upsert()`, but this isn't documented
+- Workers AI only needs **Read** for inference, but it's not clear from the UI
+- The "Edit Cloudflare Workers" template doesn't include Vectorize permissions at all
+
+I set up Vectorize with "Read" permission and got a cryptic permission denied error when trying to store embeddings.
+
+**Impact**:
+- Wasted 10+ minutes debugging permission issues
+- Had to trial-and-error different permission combinations
+- No clear feedback on which specific permission was missing
+
+**Suggestion**:
+1. Add tooltips in the token creation UI explaining what each permission level allows
+2. When a permission error occurs, include which permission is needed in the error message
+3. Update the "Edit Cloudflare Workers" template to include all common bindings (D1, AI, Vectorize, KV)
+
+---
+
+## Friction Point #10: 500 Errors Provide No Useful Debug Information
+
+**Product**: Cloudflare Workers / Error Handling
+
+**Title**: Worker errors return generic 500 with no stack trace or details
+
+**Problem**:
+When my `/api/seed` endpoint failed, the browser just showed a 500 error with no details. I had to:
+1. Wrap everything in try-catch
+2. Manually stringify errors
+3. Use `curl` to see the actual JSON error response
+
+The actual error was "D1_ERROR: no such column: job_to_be_done" - useful info that was hidden behind a generic 500.
+
+**Impact**:
+- Significant time spent debugging blind
+- Had to add verbose error handling throughout the codebase
+- Production errors would be impossible to diagnose without extensive logging
+
+**Suggestion**:
+1. In development mode, return full error details including stack traces
+2. Add a `--verbose` flag to `wrangler dev` that shows detailed error responses
+3. Provide a standard error response format: `{ error: string, code: string, stack?: string }`
+
+---
+
+## Friction Point #11: No Guidance on AI Rate Limits During Batch Operations
+
+**Product**: Workers AI
+
+**Title**: Seeding data with multiple AI calls risks timeout without clear limits
+
+**Problem**:
+My seed function calls Workers AI for each of 30 feedback items (sentiment analysis + embedding). This could easily hit:
+- CPU time limits
+- AI rate limits
+- Request timeout limits
+
+There's no documentation on best practices for batch AI operations, recommended batch sizes, or how to handle rate limiting gracefully.
+
+**Impact**:
+- Had to guess at safe batch sizes
+- Risk of partial data corruption if seed times out mid-way
+- No way to know if I'm approaching limits until I hit them
+
+**Suggestion**:
+1. Document CPU/rate limits clearly for Workers AI operations
+2. Provide a "batch processing" example in the Workers AI docs
+3. Add response headers showing remaining quota/rate limits
+4. Consider a native batch API: `env.AI.runBatch([...prompts])`
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -262,12 +341,13 @@ To actually send emails, I'd have to sign up for a third-party service like Send
 | Category | Count |
 |----------|-------|
 | CLI/Tooling | 5 |
-| Documentation | 1 |
 | D1 Database | 1 |
-| Workers AI | 1 |
+| Workers AI | 2 |
 | Email/Workers | 1 |
+| Dashboard/API Tokens | 1 |
+| Error Handling | 1 |
 
-**Total Friction Points**: 8
+**Total Friction Points**: 11
 
 ---
 

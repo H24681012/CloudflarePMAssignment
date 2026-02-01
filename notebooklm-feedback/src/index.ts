@@ -228,23 +228,25 @@ async function computeGeneralizedJTBDs(env: Env, feedbackItems: FeedbackEntry[])
     `${i + 1}. [${f.source}] "${f.content}"`
   ).join('\n');
 
-  const prompt = `Analyze these ${feedbackItems.length} customer feedback items about NotebookLM and identify the 4-5 KEY jobs-to-be-done that represent the main user needs.
+  const prompt = `Analyze these ${feedbackItems.length} customer feedback items about NotebookLM and identify the 2-3 MOST IMPORTANT jobs-to-be-done.
 
 FEEDBACK:
 ${feedbackSummary}
 
-For each job, use the JTBD format:
-"When I [situation/context], but [barrier/problem], help me [goal], so I can [outcome]."
+Write 2-3 high-quality JTBD statements. Each must follow this EXACT format:
+"When I [specific situation], but [specific barrier], help me [clear goal], so I can [desired outcome]."
 
-Respond with ONLY valid JSON array (no other text):
+Be SPECIFIC - not generic. Reference actual pain points from the feedback.
+
+Respond with ONLY valid JSON array:
 [
   {
-    "job": "When I [context], but [barrier], help me [goal], so I can [outcome].",
-    "category": "short category name like 'Research', 'Audio', 'Collaboration', 'Performance', 'Features'"
+    "job": "When I [specific situation], but [specific barrier], help me [clear goal], so I can [desired outcome].",
+    "category": "Research OR Audio OR Collaboration OR Performance OR Features"
   }
 ]
 
-Return exactly 4-5 jobs that capture the MAIN themes. Generalize similar feedback into broader jobs.`;
+Return exactly 2-3 jobs. Quality over quantity.`;
 
   try {
     const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
@@ -260,8 +262,8 @@ Return exactly 4-5 jobs that capture the MAIN themes. Generalize similar feedbac
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
       if (Array.isArray(parsed)) {
-        // Calculate stats for each job category
-        return parsed.slice(0, 5).map((j: any) => {
+        // Calculate stats for each job category (max 3 jobs)
+        return parsed.slice(0, 3).map((j: any) => {
           const category = (j.category || 'General').toLowerCase();
           // Find matching feedback for this category based on keywords
           const keywords = category.split(/[\s,]+/);
@@ -270,7 +272,7 @@ Return exactly 4-5 jobs that capture the MAIN themes. Generalize similar feedbac
                               (f.themes && f.themes.toLowerCase().includes(k)))
           );
 
-          const count = Math.max(matchingFeedback.length, Math.floor(feedbackItems.length / 5));
+          const count = Math.max(matchingFeedback.length, Math.floor(feedbackItems.length / 3));
           const avgSent = matchingFeedback.length > 0
             ? matchingFeedback.reduce((sum, f) => sum + parseInt(f.sentiment || "5"), 0) / matchingFeedback.length
             : 5;
@@ -300,6 +302,14 @@ Return exactly 4-5 jobs that capture the MAIN themes. Generalize similar feedbac
   }];
 }
 
+// Generate a random date within the last N days
+function getRandomPastDate(maxDaysAgo: number): string {
+  const now = new Date();
+  const daysAgo = Math.floor(Math.random() * maxDaysAgo);
+  const pastDate = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+  return pastDate.toISOString().replace('T', ' ').substring(0, 19);
+}
+
 // Auto-seed function (called automatically when DB is empty)
 // NOTE: Database stores ONLY raw inputs + basic analysis (sentiment/urgency/themes)
 // JTBD is computed on-demand by AI, never stored
@@ -307,10 +317,15 @@ async function autoSeedData(env: Env): Promise<void> {
   const themeCounts: Record<string, number> = {};
   const vectors: VectorizeVector[] = [];
 
-  for (const f of MOCK_FEEDBACK) {
+  for (let i = 0; i < MOCK_FEEDBACK.length; i++) {
+    const f = MOCK_FEEDBACK[i];
+    // Spread feedback across last 90 days: first items are older, recent items are newer
+    const daysAgo = Math.floor((MOCK_FEEDBACK.length - i) / MOCK_FEEDBACK.length * 90);
+    const createdAt = getRandomPastDate(Math.max(1, daysAgo));
+
     const result = await env.DB.prepare(
-      "INSERT INTO feedback (source, content, author, url) VALUES (?, ?, ?, ?) RETURNING id"
-    ).bind(f.source, f.content, f.author, f.url).first() as { id: number };
+      "INSERT INTO feedback (source, content, author, url, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id"
+    ).bind(f.source, f.content, f.author, f.url, createdAt).first() as { id: number };
 
     const analysis = await analyzeWithAI(env, f.content);
 
@@ -357,11 +372,16 @@ async function handleSeed(env: Env, corsHeaders: Record<string, string>): Promis
     const themeCounts: Record<string, number> = {};
     const vectors: VectorizeVector[] = [];
 
-    for (const f of MOCK_FEEDBACK) {
-      // Insert raw feedback (INPUT)
+    for (let i = 0; i < MOCK_FEEDBACK.length; i++) {
+      const f = MOCK_FEEDBACK[i];
+      // Spread feedback across last 90 days for realistic digest data
+      const daysAgo = Math.floor((MOCK_FEEDBACK.length - i) / MOCK_FEEDBACK.length * 90);
+      const createdAt = getRandomPastDate(Math.max(1, daysAgo));
+
+      // Insert raw feedback (INPUT) with varied timestamp
       const result = await env.DB.prepare(
-        "INSERT INTO feedback (source, content, author, url) VALUES (?, ?, ?, ?) RETURNING id"
-      ).bind(f.source, f.content, f.author, f.url).first() as { id: number };
+        "INSERT INTO feedback (source, content, author, url, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id"
+      ).bind(f.source, f.content, f.author, f.url, createdAt).first() as { id: number };
       inserted++;
 
       // Analyze with Workers AI (Llama 3.1) - only sentiment/urgency/themes
@@ -922,16 +942,16 @@ function getOverviewPage(feedbackData: FeedbackEntry[], stats: any): string {
 
       const grouped = {};
       analyzed.forEach(f => {
-        const sent = parseInt(f.sentiment) || 5;
-        const urg = parseInt(f.urgency) || 5;
+        const sent = Math.min(10, Math.max(0, parseInt(f.sentiment) || 5));
+        const urg = Math.min(10, Math.max(0, parseInt(f.urgency) || 5));
         const key = sent + '-' + urg + '-' + f.source;
         if (!grouped[key]) grouped[key] = { x: sent, y: urg, source: f.source, count: 0, sample: f.content };
         grouped[key].count++;
       });
 
       const painMapData = Object.values(grouped).map(g => ({
-        x: g.x + (Math.random() - 0.5) * 0.4,
-        y: g.y + (Math.random() - 0.5) * 0.4,
+        x: Math.min(10, Math.max(0, g.x + (Math.random() - 0.5) * 0.3)),
+        y: Math.min(10, Math.max(0, g.y + (Math.random() - 0.5) * 0.3)),
         r: Math.min(6 + g.count * 3, 20),
         source: g.source,
         sample: g.sample
