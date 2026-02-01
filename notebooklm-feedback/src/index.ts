@@ -1104,127 +1104,94 @@ function getFeedbackPage(feedbackData: FeedbackEntry[]): string {
 }
 
 function getInsightsPage(feedbackData: FeedbackEntry[], stats: any): string {
-  const analyzed = feedbackData.filter(f => f.analyzed_at);
+  const analyzed = feedbackData.filter(f => f.analyzed_at && f.job_to_be_done);
 
-  // Categorize JTBDs with better grouping
-  const jtbdCategories: Record<string, { count: number; samples: string[]; feedback: FeedbackEntry[] }> = {
-    'Research & Synthesis': { count: 0, samples: [], feedback: [] },
-    'Audio Learning': { count: 0, samples: [], feedback: [] },
-    'Study & Education': { count: 0, samples: [], feedback: [] },
-    'Collaboration': { count: 0, samples: [], feedback: [] },
-    'Productivity': { count: 0, samples: [], feedback: [] },
-    'Content Creation': { count: 0, samples: [], feedback: [] },
-  };
-
+  // Group feedback by their AI-extracted JTBD (exact match for now)
+  const jtbdMap: Record<string, FeedbackEntry[]> = {};
   analyzed.forEach(f => {
-    if (!f.job_to_be_done) return;
-    const jtbd = f.job_to_be_done.toLowerCase();
-
-    let category = 'Productivity'; // default
-    if (jtbd.includes('research') || jtbd.includes('paper') || jtbd.includes('document') || jtbd.includes('synthesiz')) {
-      category = 'Research & Synthesis';
-    } else if (jtbd.includes('audio') || jtbd.includes('listen') || jtbd.includes('podcast')) {
-      category = 'Audio Learning';
-    } else if (jtbd.includes('study') || jtbd.includes('learn') || jtbd.includes('school') || jtbd.includes('exam') || jtbd.includes('course')) {
-      category = 'Study & Education';
-    } else if (jtbd.includes('team') || jtbd.includes('share') || jtbd.includes('collaborat')) {
-      category = 'Collaboration';
-    } else if (jtbd.includes('creat') || jtbd.includes('write') || jtbd.includes('content')) {
-      category = 'Content Creation';
-    }
-
-    jtbdCategories[category].count++;
-    if (jtbdCategories[category].samples.length < 3) {
-      jtbdCategories[category].samples.push(f.job_to_be_done);
-    }
-    jtbdCategories[category].feedback.push(f);
+    const jtbd = f.job_to_be_done || '';
+    if (!jtbdMap[jtbd]) jtbdMap[jtbd] = [];
+    jtbdMap[jtbd].push(f);
   });
 
-  // Sort by count
-  const sortedCategories = Object.entries(jtbdCategories)
-    .filter(([_, data]) => data.count > 0)
-    .sort((a, b) => b[1].count - a[1].count);
+  // Sort JTBDs by frequency
+  const sortedJTBDs = Object.entries(jtbdMap)
+    .sort((a, b) => b[1].length - a[1].length);
 
-  const icons: Record<string, string> = {
-    'Research & Synthesis': '🔬',
-    'Audio Learning': '🎧',
-    'Study & Education': '📚',
-    'Collaboration': '👥',
-    'Productivity': '⚡',
-    'Content Creation': '✍️',
+  // Calculate avg sentiment per JTBD
+  const getAvgSentiment = (items: FeedbackEntry[]) => {
+    const sum = items.reduce((acc, f) => acc + parseInt(f.sentiment || "5"), 0);
+    return Math.round((sum / items.length) * 10) / 10;
   };
 
   return `
-    <h1 class="page-title">Why Users Hire NotebookLM</h1>
-    <p class="page-subtitle">Jobs-to-be-done analysis from ${analyzed.length} feedback items (extracted by <strong>Workers AI</strong>)</p>
+    <style>
+      .jtbd-full-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
+      .jtbd-full-card:hover { border-color: #8b5cf6; }
+      .jtbd-statement { font-size: 1rem; line-height: 1.6; color: #e2e8f0; margin-bottom: 1rem; }
+      .jtbd-statement .when { color: #60a5fa; }
+      .jtbd-statement .but { color: #f87171; }
+      .jtbd-statement .help { color: #4ade80; }
+      .jtbd-statement .so { color: #c084fc; }
+      .jtbd-meta { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
+      .jtbd-count { background: #8b5cf6; color: white; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem; font-weight: 600; }
+      .jtbd-sentiment { padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem; }
+      .jtbd-sources { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+    </style>
+
+    <h1 class="page-title">Jobs to be Done</h1>
+    <p class="page-subtitle">AI-extracted jobs from ${analyzed.length} feedback items using <strong>Workers AI (Llama 3.1)</strong></p>
 
     <div class="card full-width" style="margin-bottom: 2rem; background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%); border-color: #3b82f6;">
-      <h2 style="color: #3b82f6;">Key Insight</h2>
-      <p style="font-size: 1.1rem; line-height: 1.6;">
-        ${sortedCategories.length > 0 ?
-          `Users primarily hire NotebookLM for <strong style="color: #8b5cf6;">${sortedCategories[0][0]}</strong> (${Math.round(sortedCategories[0][1].count / analyzed.length * 100)}% of feedback).
-          ${sortedCategories.length > 1 ? `Secondary use cases include <strong>${sortedCategories[1][0]}</strong> and <strong>${sortedCategories.length > 2 ? sortedCategories[2][0] : ''}</strong>.` : ''}`
-          : 'No JTBD data available yet.'}
+      <h2 style="color: #3b82f6;">JTBD Framework</h2>
+      <p style="color: #94a3b8; line-height: 1.6;">
+        Each job follows the format: <span style="color: #60a5fa;">When I</span> [context], <span style="color: #f87171;">but</span> [barrier], <span style="color: #4ade80;">help me</span> [goal], <span style="color: #c084fc;">so I can</span> [outcome].
+      </p>
+      <p style="margin-top: 0.5rem; color: #64748b; font-size: 0.9rem;">
+        ${sortedJTBDs.length} unique jobs identified from user feedback.
       </p>
     </div>
 
-    <h2 style="margin-bottom: 1rem;">Job Categories</h2>
-    <div class="grid">
-      ${sortedCategories.map(([name, data]) => `
-        <div class="jtbd-card">
-          <div class="jtbd-icon">${icons[name] || '💡'}</div>
-          <div class="jtbd-title">${name}</div>
-          <div style="font-size: 2rem; font-weight: bold; color: #8b5cf6; margin: 0.5rem 0;">${Math.round(data.count / analyzed.length * 100)}%</div>
-          <div class="jtbd-desc">${data.count} mentions</div>
-          <div style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #334155;">
-            <div style="font-size: 0.8rem; color: #64748b; margin-bottom: 0.5rem;">Example jobs:</div>
-            ${data.samples.slice(0, 2).map(s => `<p style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.25rem; font-style: italic;">"${s}"</p>`).join('')}
+    <h2 style="margin-bottom: 1rem;">All AI-Extracted Jobs (${sortedJTBDs.length})</h2>
+
+    ${sortedJTBDs.map(([jtbd, items]) => {
+      const avgSent = getAvgSentiment(items);
+      const sentColor = avgSent >= 7 ? 'rgba(34, 197, 94, 0.2)' : avgSent >= 4 ? 'rgba(234, 179, 8, 0.2)' : 'rgba(239, 68, 68, 0.2)';
+      const sentTextColor = avgSent >= 7 ? '#4ade80' : avgSent >= 4 ? '#facc15' : '#f87171';
+      const sources = [...new Set(items.map(f => f.source))];
+
+      // Highlight JTBD parts
+      const highlightJTBD = (text: string) => {
+        return text
+          .replace(/(When I)/gi, '<span class="when">$1</span>')
+          .replace(/(, but|but )/gi, '<span class="but">$1</span>')
+          .replace(/(help me)/gi, '<span class="help">$1</span>')
+          .replace(/(so I can|so I)/gi, '<span class="so">$1</span>');
+      };
+
+      return `
+        <div class="jtbd-full-card">
+          <div class="jtbd-statement">${highlightJTBD(jtbd)}</div>
+          <div class="jtbd-meta">
+            <span class="jtbd-count">${items.length}x mentioned</span>
+            <span class="jtbd-sentiment" style="background: ${sentColor}; color: ${sentTextColor};">
+              ${avgSent >= 7 ? '😊' : avgSent >= 4 ? '😐' : '😞'} Avg sentiment: ${avgSent}/10
+            </span>
+          </div>
+          <div class="jtbd-sources">
+            ${sources.map(s => `<span class="badge badge-source">${s}</span>`).join('')}
           </div>
         </div>
-      `).join('')}
-    </div>
+      `;
+    }).join('')}
 
-    <div class="card full-width" style="margin-top: 2rem;">
-      <h2>All Extracted Jobs-to-be-Done</h2>
-      <p style="color: #64748b; margin-bottom: 1rem; font-size: 0.85rem;">Every JTBD extracted by Workers AI from user feedback</p>
-      <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
-        ${analyzed.filter(f => f.job_to_be_done).slice(0, 20).map(f => {
-          const sent = parseInt(f.sentiment || "5");
-          const color = sent >= 7 ? '#22c55e' : sent >= 4 ? '#eab308' : '#ef4444';
-          return `<div style="background: #0f172a; padding: 0.5rem 1rem; border-radius: 20px; border-left: 3px solid ${color}; font-size: 0.85rem;">${f.job_to_be_done}</div>`;
-        }).join('')}
+    ${sortedJTBDs.length === 0 ? `
+      <div class="card full-width">
+        <p style="text-align: center; color: #64748b; padding: 2rem;">
+          No JTBD data extracted yet. The AI will extract jobs-to-be-done when feedback is analyzed.
+        </p>
       </div>
-    </div>
-
-    <div class="card full-width" style="margin-top: 2rem;">
-      <h2>JTBD Distribution</h2>
-      <div class="chart-container" style="height: 300px;"><canvas id="jtbdChart"></canvas></div>
-    </div>
-
-    <script>
-    const jtbdData = ${JSON.stringify(sortedCategories.map(([name, data]) => ({ name, count: data.count })))};
-    new Chart(document.getElementById('jtbdChart'), {
-      type: 'bar',
-      data: {
-        labels: jtbdData.map(d => d.name),
-        datasets: [{
-          label: 'Feedback Count',
-          data: jtbdData.map(d => d.count),
-          backgroundColor: ['#8b5cf6', '#6366f1', '#3b82f6', '#0ea5e9', '#14b8a6', '#22c55e'],
-          borderRadius: 8
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
-        scales: {
-          y: { ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
-          x: { ticks: { color: '#94a3b8' }, grid: { display: false } }
-        }
-      }
-    });
-    </script>
+    ` : ''}
   `;
 }
 
