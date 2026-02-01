@@ -1238,8 +1238,8 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
   const last90d = filterByPeriod(24 * 90);
 
   // Calculate stats for a period
-  const getStats = (items: FeedbackEntry[]) => {
-    if (items.length === 0) return { count: 0, avgSent: 0, avgUrg: 0, topIssues: [], topPraise: [], sources: {} as Record<string, number> };
+  const getPeriodStats = (items: FeedbackEntry[]) => {
+    if (items.length === 0) return { count: 0, avgSent: 0, avgUrg: 0, topIssues: [] as FeedbackEntry[], topPraise: [] as FeedbackEntry[], sources: {} as Record<string, number> };
 
     let sentSum = 0, urgSum = 0;
     const sources: Record<string, number> = {};
@@ -1266,9 +1266,9 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
     };
   };
 
-  const stats24h = getStats(last24h);
-  const stats7d = getStats(last7d);
-  const stats90d = getStats(last90d);
+  const stats24h = getPeriodStats(last24h);
+  const stats7d = getPeriodStats(last7d);
+  const stats90d = getPeriodStats(last90d);
 
   // Get unique JTBDs for insights
   const getTopJTBDs = (items: FeedbackEntry[]) => {
@@ -1280,157 +1280,108 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
     });
     return Object.entries(jtbdCount)
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([jtbd, count]) => ({ jtbd, count }));
+      .slice(0, 3);
   };
 
-  const renderDigest = (period: string, periodStats: any, topJTBDs: any[]) => {
-    const sentColor = periodStats.avgSent >= 7 ? '#22c55e' : periodStats.avgSent >= 4 ? '#eab308' : '#ef4444';
-    const sentEmoji = periodStats.avgSent >= 7 ? '😊' : periodStats.avgSent >= 4 ? '😐' : '😟';
-    const urgEmoji = periodStats.avgUrg >= 7 ? '🔥' : periodStats.avgUrg >= 4 ? '⚡' : '💤';
+  // Pre-compute all data
+  const jtbds24h = getTopJTBDs(last24h);
+  const jtbds7d = getTopJTBDs(last7d);
+  const jtbds90d = getTopJTBDs(last90d);
 
-    return \`
-      <div class="digest-section">
-        <div class="digest-header">
-          <h3>\${period}</h3>
-          <span class="digest-count">\${periodStats.count} feedback items</span>
-        </div>
+  // Helper to render items
+  const renderIssues = (items: FeedbackEntry[]) => items.map(f =>
+    '<div class="digest-item issue"><div class="digest-item-content">"' + f.content.substring(0, 150) + (f.content.length > 150 ? '...' : '') + '"</div><div class="digest-item-meta"><span class="badge badge-source">' + f.source + '</span><span class="badge score-low">Urg: ' + f.urgency + '/10</span></div></div>'
+  ).join('');
 
-        <div class="digest-metrics">
-          <div class="digest-metric">
-            <span class="digest-metric-value" style="color: \${sentColor}">\${sentEmoji} \${periodStats.avgSent}/10</span>
-            <span class="digest-metric-label">Avg Sentiment</span>
-          </div>
-          <div class="digest-metric">
-            <span class="digest-metric-value" style="color: #fb923c">\${urgEmoji} \${periodStats.avgUrg}/10</span>
-            <span class="digest-metric-label">Avg Urgency</span>
-          </div>
-          <div class="digest-metric">
-            <span class="digest-metric-value" style="color: #8b5cf6">\${Object.keys(periodStats.sources).length}</span>
-            <span class="digest-metric-label">Sources</span>
-          </div>
-        </div>
+  const renderPraise = (items: FeedbackEntry[]) => items.map(f =>
+    '<div class="digest-item praise"><div class="digest-item-content">"' + f.content.substring(0, 150) + (f.content.length > 150 ? '...' : '') + '"</div><div class="digest-item-meta"><span class="badge badge-source">' + f.source + '</span><span class="badge score-high">Sent: ' + f.sentiment + '/10</span></div></div>'
+  ).join('');
 
-        \${topJTBDs.length > 0 ? \`
-          <div class="digest-insights">
-            <h4>Top Jobs to be Done</h4>
-            \${topJTBDs.map(j => \`
-              <div class="digest-jtbd">
-                <span class="jtbd-text">\${j.jtbd}</span>
-                <span class="jtbd-count">\${j.count}x</span>
-              </div>
-            \`).join('')}
-          </div>
-        \` : ''}
+  const renderJTBDs = (items: [string, number][]) => items.map(([jtbd, count]) =>
+    '<div class="digest-jtbd"><span class="jtbd-text">' + jtbd + '</span><span class="jtbd-count">' + count + 'x</span></div>'
+  ).join('');
 
-        \${periodStats.topIssues.length > 0 ? \`
-          <div class="digest-issues">
-            <h4>🚨 Top Issues to Address</h4>
-            \${periodStats.topIssues.map((f: FeedbackEntry) => \`
-              <div class="digest-item issue">
-                <div class="digest-item-content">"\${f.content.substring(0, 150)}\${f.content.length > 150 ? '...' : ''}"</div>
-                <div class="digest-item-meta">
-                  <span class="badge badge-source">\${f.source}</span>
-                  <span class="badge score-low">Urg: \${f.urgency}/10</span>
-                </div>
-              </div>
-            \`).join('')}
-          </div>
-        \` : '<p style="color: #64748b; font-size: 0.9rem;">No critical issues in this period</p>'}
+  const getSentColor = (avg: number) => avg >= 7 ? '#22c55e' : avg >= 4 ? '#eab308' : '#ef4444';
+  const getSentEmoji = (avg: number) => avg >= 7 ? '😊' : avg >= 4 ? '😐' : '😟';
+  const getUrgEmoji = (avg: number) => avg >= 7 ? '🔥' : avg >= 4 ? '⚡' : '💤';
 
-        \${periodStats.topPraise.length > 0 ? \`
-          <div class="digest-praise">
-            <h4>🌟 Positive Highlights</h4>
-            \${periodStats.topPraise.map((f: FeedbackEntry) => \`
-              <div class="digest-item praise">
-                <div class="digest-item-content">"\${f.content.substring(0, 150)}\${f.content.length > 150 ? '...' : ''}"</div>
-                <div class="digest-item-meta">
-                  <span class="badge badge-source">\${f.source}</span>
-                  <span class="badge score-high">Sent: \${f.sentiment}/10</span>
-                </div>
-              </div>
-            \`).join('')}
-          </div>
-        \` : ''}
-      </div>
-    \`;
+  const renderDigestSection = (title: string, periodStats: any, jtbds: [string, number][]) => {
+    return '<div class="digest-section"><div class="digest-header"><h3>' + title + '</h3><span class="digest-count">' + periodStats.count + ' feedback items</span></div>' +
+      '<div class="digest-metrics">' +
+      '<div class="digest-metric"><span class="digest-metric-value" style="color: ' + getSentColor(periodStats.avgSent) + '">' + getSentEmoji(periodStats.avgSent) + ' ' + periodStats.avgSent + '/10</span><span class="digest-metric-label">Avg Sentiment</span></div>' +
+      '<div class="digest-metric"><span class="digest-metric-value" style="color: #fb923c">' + getUrgEmoji(periodStats.avgUrg) + ' ' + periodStats.avgUrg + '/10</span><span class="digest-metric-label">Avg Urgency</span></div>' +
+      '<div class="digest-metric"><span class="digest-metric-value" style="color: #8b5cf6">' + Object.keys(periodStats.sources).length + '</span><span class="digest-metric-label">Sources</span></div>' +
+      '</div>' +
+      (jtbds.length > 0 ? '<div class="digest-insights"><h4>Top Jobs to be Done</h4>' + renderJTBDs(jtbds) + '</div>' : '') +
+      (periodStats.topIssues.length > 0 ? '<div class="digest-issues"><h4>🚨 Top Issues to Address</h4>' + renderIssues(periodStats.topIssues) + '</div>' : '<p style="color: #64748b; font-size: 0.9rem;">No critical issues in this period</p>') +
+      (periodStats.topPraise.length > 0 ? '<div class="digest-praise"><h4>🌟 Positive Highlights</h4>' + renderPraise(periodStats.topPraise) + '</div>' : '') +
+      '</div>';
   };
 
-  return \`
-    <style>
-      .digest-container { max-width: 800px; margin: 0 auto; }
-      .digest-tabs { display: flex; gap: 0; margin-bottom: 2rem; background: #1e293b; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }
-      .digest-tab { flex: 1; padding: 1rem; text-align: center; cursor: pointer; background: transparent; border: none; color: #94a3b8; font-size: 0.95rem; font-weight: 500; transition: all 0.2s; }
-      .digest-tab:hover { background: #283548; color: #e2e8f0; }
-      .digest-tab.active { background: #8b5cf6; color: white; }
-      .digest-panel { display: none; }
-      .digest-panel.active { display: block; }
-      .digest-section { background: #1e293b; border-radius: 12px; padding: 1.5rem; border: 1px solid #334155; }
-      .digest-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }
-      .digest-header h3 { font-size: 1.25rem; color: #e2e8f0; margin: 0; }
-      .digest-count { background: #334155; padding: 0.35rem 0.75rem; border-radius: 20px; font-size: 0.85rem; color: #94a3b8; }
-      .digest-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }
-      .digest-metric { background: #0f172a; padding: 1rem; border-radius: 8px; text-align: center; }
-      .digest-metric-value { font-size: 1.5rem; font-weight: 600; display: block; margin-bottom: 0.25rem; }
-      .digest-metric-label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }
-      .digest-insights { margin-bottom: 1.5rem; }
-      .digest-insights h4, .digest-issues h4, .digest-praise h4 { font-size: 0.9rem; color: #94a3b8; margin-bottom: 0.75rem; }
-      .digest-jtbd { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1)); border-radius: 8px; margin-bottom: 0.5rem; }
-      .jtbd-text { color: #c4b5fd; font-size: 0.9rem; }
-      .jtbd-count { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
-      .digest-issues, .digest-praise { margin-top: 1.5rem; }
-      .digest-item { background: #0f172a; padding: 1rem; border-radius: 8px; margin-bottom: 0.75rem; border-left: 3px solid transparent; }
-      .digest-item.issue { border-left-color: #ef4444; }
-      .digest-item.praise { border-left-color: #22c55e; }
-      .digest-item-content { font-size: 0.9rem; line-height: 1.5; margin-bottom: 0.5rem; color: #e2e8f0; }
-      .digest-item-meta { display: flex; gap: 0.5rem; }
-      .email-preview { background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%); border: 2px dashed #3b82f6; border-radius: 12px; padding: 1.5rem; margin-top: 2rem; }
-      .email-preview h4 { color: #60a5fa; margin-bottom: 0.5rem; }
-      .email-preview p { color: #94a3b8; font-size: 0.9rem; }
-      .email-note { background: rgba(251, 146, 60, 0.1); border: 1px solid rgba(251, 146, 60, 0.3); border-radius: 8px; padding: 1rem; margin-top: 1rem; }
-      .email-note p { color: #fb923c; font-size: 0.85rem; margin: 0; }
-    </style>
+  const styles = '<style>' +
+    '.digest-container { max-width: 800px; margin: 0 auto; }' +
+    '.digest-tabs { display: flex; gap: 0; margin-bottom: 2rem; background: #1e293b; border-radius: 12px; overflow: hidden; border: 1px solid #334155; }' +
+    '.digest-tab { flex: 1; padding: 1rem; text-align: center; cursor: pointer; background: transparent; border: none; color: #94a3b8; font-size: 0.95rem; font-weight: 500; transition: all 0.2s; }' +
+    '.digest-tab:hover { background: #283548; color: #e2e8f0; }' +
+    '.digest-tab.active { background: #8b5cf6; color: white; }' +
+    '.digest-panel { display: none; }' +
+    '.digest-panel.active { display: block; }' +
+    '.digest-section { background: #1e293b; border-radius: 12px; padding: 1.5rem; border: 1px solid #334155; }' +
+    '.digest-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #334155; }' +
+    '.digest-header h3 { font-size: 1.25rem; color: #e2e8f0; margin: 0; }' +
+    '.digest-count { background: #334155; padding: 0.35rem 0.75rem; border-radius: 20px; font-size: 0.85rem; color: #94a3b8; }' +
+    '.digest-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem; }' +
+    '.digest-metric { background: #0f172a; padding: 1rem; border-radius: 8px; text-align: center; }' +
+    '.digest-metric-value { font-size: 1.5rem; font-weight: 600; display: block; margin-bottom: 0.25rem; }' +
+    '.digest-metric-label { font-size: 0.75rem; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; }' +
+    '.digest-insights { margin-bottom: 1.5rem; }' +
+    '.digest-insights h4, .digest-issues h4, .digest-praise h4 { font-size: 0.9rem; color: #94a3b8; margin-bottom: 0.75rem; }' +
+    '.digest-jtbd { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem; background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(59, 130, 246, 0.1)); border-radius: 8px; margin-bottom: 0.5rem; }' +
+    '.jtbd-text { color: #c4b5fd; font-size: 0.9rem; }' +
+    '.jtbd-count { background: rgba(139, 92, 246, 0.2); color: #8b5cf6; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }' +
+    '.digest-issues, .digest-praise { margin-top: 1.5rem; }' +
+    '.digest-item { background: #0f172a; padding: 1rem; border-radius: 8px; margin-bottom: 0.75rem; border-left: 3px solid transparent; }' +
+    '.digest-item.issue { border-left-color: #ef4444; }' +
+    '.digest-item.praise { border-left-color: #22c55e; }' +
+    '.digest-item-content { font-size: 0.9rem; line-height: 1.5; margin-bottom: 0.5rem; color: #e2e8f0; }' +
+    '.digest-item-meta { display: flex; gap: 0.5rem; }' +
+    '.email-preview { background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%); border: 2px dashed #3b82f6; border-radius: 12px; padding: 1.5rem; margin-top: 2rem; }' +
+    '.email-preview h4 { color: #60a5fa; margin-bottom: 0.5rem; }' +
+    '.email-preview p { color: #94a3b8; font-size: 0.9rem; }' +
+    '.email-note { background: rgba(251, 146, 60, 0.1); border: 1px solid rgba(251, 146, 60, 0.3); border-radius: 8px; padding: 1rem; margin-top: 1rem; }' +
+    '.email-note p { color: #fb923c; font-size: 0.85rem; margin: 0; }' +
+    '</style>';
 
-    <div style="text-align: center; margin-bottom: 2rem;">
-      <h1 class="page-title">Email Digest Preview</h1>
-      <p class="page-subtitle">AI-generated summaries for PM stakeholder updates</p>
-    </div>
+  const script = '<script>' +
+    'function showTab(period) {' +
+    "document.querySelectorAll('.digest-tab').forEach(t => t.classList.remove('active'));" +
+    "document.querySelectorAll('.digest-panel').forEach(p => p.classList.remove('active'));" +
+    "document.querySelector('[data-period=\"' + period + '\"]').classList.add('active');" +
+    "document.getElementById('panel-' + period).classList.add('active');" +
+    '}' +
+    '</script>';
 
-    <div class="digest-container">
-      <div class="digest-tabs">
-        <button class="digest-tab active" onclick="showTab('24h')">Last 24 Hours</button>
-        <button class="digest-tab" onclick="showTab('7d')">Last 7 Days</button>
-        <button class="digest-tab" onclick="showTab('90d')">Last Quarter</button>
-      </div>
-
-      <div id="panel-24h" class="digest-panel active">
-        \${renderDigest('Last 24 Hours Summary', stats24h, getTopJTBDs(last24h))}
-      </div>
-
-      <div id="panel-7d" class="digest-panel">
-        \${renderDigest('Weekly Summary', stats7d, getTopJTBDs(last7d))}
-      </div>
-
-      <div id="panel-90d" class="digest-panel">
-        \${renderDigest('Quarterly Summary', stats90d, getTopJTBDs(last90d))}
-      </div>
-
-      <div class="email-preview">
-        <h4>📧 Email Delivery Note</h4>
-        <p>This digest would be sent to PMs via email using a third-party service (SendGrid, Resend, or Mailchannels).</p>
-        <div class="email-note">
-          <p><strong>Friction Point:</strong> Cloudflare Workers don't have native outbound email support. Email Workers only handle <em>receiving</em> emails, not sending. A third-party integration would be required for scheduled digest delivery.</p>
-        </div>
-      </div>
-    </div>
-
-    <script>
-    function showTab(period) {
-      document.querySelectorAll('.digest-tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.digest-panel').forEach(p => p.classList.remove('active'));
-      document.querySelector(\\\`[onclick="showTab('\${period}')"]\\\`).classList.add('active');
-      document.getElementById('panel-' + period).classList.add('active');
-    }
-    </script>
-  \`;
+  return styles +
+    '<div style="text-align: center; margin-bottom: 2rem;">' +
+    '<h1 class="page-title">Email Digest Preview</h1>' +
+    '<p class="page-subtitle">AI-generated summaries for PM stakeholder updates</p>' +
+    '</div>' +
+    '<div class="digest-container">' +
+    '<div class="digest-tabs">' +
+    '<button class="digest-tab active" data-period="24h" onclick="showTab(\'24h\')">Last 24 Hours</button>' +
+    '<button class="digest-tab" data-period="7d" onclick="showTab(\'7d\')">Last 7 Days</button>' +
+    '<button class="digest-tab" data-period="90d" onclick="showTab(\'90d\')">Last Quarter</button>' +
+    '</div>' +
+    '<div id="panel-24h" class="digest-panel active">' + renderDigestSection('Last 24 Hours Summary', stats24h, jtbds24h) + '</div>' +
+    '<div id="panel-7d" class="digest-panel">' + renderDigestSection('Weekly Summary', stats7d, jtbds7d) + '</div>' +
+    '<div id="panel-90d" class="digest-panel">' + renderDigestSection('Quarterly Summary', stats90d, jtbds90d) + '</div>' +
+    '<div class="email-preview">' +
+    '<h4>📧 Email Delivery Note</h4>' +
+    '<p>This digest would be sent to PMs via email using a third-party service (SendGrid, Resend, or Mailchannels).</p>' +
+    '<div class="email-note">' +
+    '<p><strong>Friction Point:</strong> Cloudflare Workers do not have native outbound email support. Email Workers only handle <em>receiving</em> emails, not sending. A third-party integration would be required for scheduled digest delivery.</p>' +
+    '</div>' +
+    '</div>' +
+    '</div>' +
+    script;
 }
