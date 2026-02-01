@@ -143,8 +143,13 @@ Respond with ONLY valid JSON in this exact format (no other text):
   "sentiment": <number 0-10 where 0=very negative, 5=neutral, 10=very positive>,
   "urgency": <number 0-10 where 0=not urgent, 10=critical/blocking issue>,
   "themes": [<array of 2-3 keyword themes like "audio-quality", "source-limit", "collaboration">],
-  "job_to_be_done": "<one sentence: Help me [action] so I can [outcome]>"
-}`;
+  "job_to_be_done": "<use JTBD format: When I [context], but [barrier], help me [goal], so I can [outcome]>"
+}
+
+IMPORTANT: The job_to_be_done MUST follow this exact structure:
+"When I [situation/context the user is in], but [the barrier or problem they face], help me [what they want the product to do], so I can [the outcome they desire]."
+
+Example: "When I need to review multiple research papers, but I don't have time to read them all, help me quickly synthesize key insights, so I can make informed decisions faster."`;
 
   try {
     const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
@@ -152,7 +157,7 @@ Respond with ONLY valid JSON in this exact format (no other text):
         { role: "system", content: "You are a product feedback analyst. Always respond with valid JSON only, no other text." },
         { role: "user", content: prompt }
       ],
-      max_tokens: 200,
+      max_tokens: 350,
     });
 
     // Parse the AI response
@@ -164,7 +169,7 @@ Respond with ONLY valid JSON in this exact format (no other text):
         sentiment: Math.min(10, Math.max(0, Number(parsed.sentiment) || 5)),
         urgency: Math.min(10, Math.max(0, Number(parsed.urgency) || 5)),
         themes: Array.isArray(parsed.themes) ? parsed.themes.slice(0, 3) : ["general"],
-        job_to_be_done: parsed.job_to_be_done || "Help me use the product better"
+        job_to_be_done: parsed.job_to_be_done || "When I use this product, but encounter friction, help me accomplish my goal, so I can be more productive."
       };
     }
   } catch (e) {
@@ -172,7 +177,7 @@ Respond with ONLY valid JSON in this exact format (no other text):
   }
 
   // Fallback if AI fails
-  return { sentiment: 5, urgency: 5, themes: ["general"], job_to_be_done: "Help me use the product better" };
+  return { sentiment: 5, urgency: 5, themes: ["general"], job_to_be_done: "When I use this product, but encounter friction, help me accomplish my goal, so I can be more productive." };
 }
 
 // Auto-seed function (called automatically when DB is empty)
