@@ -228,30 +228,42 @@ async function computeGeneralizedJTBDs(env: Env, feedbackItems: FeedbackEntry[])
     `${i + 1}. [${f.source}] "${f.content}"`
   ).join('\n');
 
-  const prompt = `Analyze these ${feedbackItems.length} customer feedback items about NotebookLM and identify the 2-3 MOST IMPORTANT jobs-to-be-done.
+  const prompt = `You are a product strategist using the Jobs-to-be-Done framework (from Clay Christensen and First Round Capital).
+
+Analyze this customer feedback about NotebookLM and identify 2-3 core JOBS users are trying to accomplish.
 
 FEEDBACK:
 ${feedbackSummary}
 
-Write 2-3 high-quality JTBD statements. Each must follow this EXACT format:
-"When I [specific situation], but [specific barrier], help me [clear goal], so I can [desired outcome]."
+A job is NOT a feature request. It's the PROGRESS a person is trying to make in their life.
 
-Be SPECIFIC - not generic. Reference actual pain points from the feedback.
+Use the First Round JTBD format:
+"When I [circumstance/situation], but [barrier/anxiety], help me [progress I want to make], so I can [meaningful outcome]."
 
-Respond with ONLY valid JSON array:
+EXAMPLES of good JTBD statements:
+- "When I want to jump into my favorite game, but I don't know if there are people around to play, help me safely coordinate with a group of like-minded gamers, so I can easily find a way to enjoy my favorite multiplayer game." (Discord)
+- "When I need to understand what people are doing on my platform, but I have different sources of data that all tell me different stories, help me easily pull together one source of truth, so I can make better product and marketing decisions." (Segment)
+
+GUIDELINES:
+1. Focus on CIRCUMSTANCES that trigger the need, not demographics
+2. Capture the EMOTIONAL dimension (frustration, anxiety, aspiration)
+3. The outcome should be MEANINGFUL (not just "save time" or "be productive")
+4. Jobs should be broad enough to represent multiple users, specific enough to be actionable
+
+Respond with ONLY a valid JSON array:
 [
   {
-    "job": "When I [specific situation], but [specific barrier], help me [clear goal], so I can [desired outcome].",
-    "category": "Research OR Audio OR Collaboration OR Performance OR Features"
+    "job": "When I [circumstance], but [barrier], help me [progress], so I can [outcome].",
+    "category": "Research OR Audio OR Collaboration OR Reliability OR Customization"
   }
 ]
 
-Return exactly 2-3 jobs. Quality over quantity.`;
+Return exactly 2-3 jobs that represent the core user needs.`;
 
   try {
     const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
       messages: [
-        { role: "system", content: "You are a product analyst. Respond with only valid JSON array." },
+        { role: "system", content: "You are a product strategist trained in Clayton Christensen's Jobs-to-be-Done theory. You identify the underlying jobs customers are trying to accomplish, focusing on circumstances and progress rather than demographics or features. Respond with only valid JSON." },
         { role: "user", content: prompt }
       ],
       max_tokens: 800,
@@ -1288,17 +1300,36 @@ function getInsightsPage(feedbackData: FeedbackEntry[], stats: any, generalizedJ
     <h1 class="page-title">Key Jobs to be Done</h1>
     <p class="page-subtitle">AI-identified user needs from ${analyzed.length} feedback items using <strong>Workers AI (Llama 3.1)</strong></p>
 
-    <div class="jtbd-note">
-      <p><strong>How it works:</strong> Workers AI analyzes all feedback to identify 4-5 generalized jobs that represent the main user needs. These are computed on-demand and never stored in the database.</p>
-    </div>
-
     <div class="card full-width" style="margin-bottom: 2rem; background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%); border-color: #3b82f6;">
-      <h2 style="color: #3b82f6;">JTBD Framework</h2>
-      <p style="color: #94a3b8; line-height: 1.6;">
-        Each job follows the format: <span style="color: #60a5fa;">When I</span> [context], <span style="color: #f87171;">but</span> [barrier], <span style="color: #4ade80;">help me</span> [goal], <span style="color: #c084fc;">so I can</span> [outcome].
+      <h2 style="color: #3b82f6;">Jobs-to-be-Done Framework</h2>
+      <p style="color: #94a3b8; line-height: 1.6; margin-bottom: 1rem;">
+        Based on <strong>Clay Christensen's JTBD theory</strong> and the <strong>First Round Capital framework</strong>. A job is not a feature request—it's the <em>progress</em> a person is trying to make in their life.
       </p>
-      <p style="margin-top: 0.5rem; color: #64748b; font-size: 0.9rem;">
-        ${generalizedJTBDs.length} key jobs identified from ${analyzed.length} feedback items across ${Object.keys(stats.bySource).length} sources.
+      <div style="background: #0f172a; padding: 1rem; border-radius: 8px; margin-bottom: 1rem;">
+        <p style="color: #e2e8f0; font-size: 0.95rem; line-height: 1.6; margin: 0;">
+          <span style="color: #60a5fa; font-weight: 500;">When I</span> [circumstance] <span style="color: #f87171; font-weight: 500;">but</span> [barrier/anxiety] <span style="color: #4ade80; font-weight: 500;">help me</span> [progress] <span style="color: #c084fc; font-weight: 500;">so I can</span> [meaningful outcome]
+        </p>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem;">
+        <div style="padding: 0.75rem; background: rgba(96, 165, 250, 0.1); border-radius: 6px;">
+          <p style="color: #60a5fa; font-size: 0.8rem; font-weight: 600; margin: 0 0 0.25rem 0;">CIRCUMSTANCE</p>
+          <p style="color: #94a3b8; font-size: 0.8rem; margin: 0;">The situation that triggers the need</p>
+        </div>
+        <div style="padding: 0.75rem; background: rgba(248, 113, 113, 0.1); border-radius: 6px;">
+          <p style="color: #f87171; font-size: 0.8rem; font-weight: 600; margin: 0 0 0.25rem 0;">BARRIER</p>
+          <p style="color: #94a3b8; font-size: 0.8rem; margin: 0;">Friction, anxiety, or frustration</p>
+        </div>
+        <div style="padding: 0.75rem; background: rgba(74, 222, 128, 0.1); border-radius: 6px;">
+          <p style="color: #4ade80; font-size: 0.8rem; font-weight: 600; margin: 0 0 0.25rem 0;">PROGRESS</p>
+          <p style="color: #94a3b8; font-size: 0.8rem; margin: 0;">The advancement they seek</p>
+        </div>
+        <div style="padding: 0.75rem; background: rgba(192, 132, 252, 0.1); border-radius: 6px;">
+          <p style="color: #c084fc; font-size: 0.8rem; font-weight: 600; margin: 0 0 0.25rem 0;">OUTCOME</p>
+          <p style="color: #94a3b8; font-size: 0.8rem; margin: 0;">Functional + emotional benefit</p>
+        </div>
+      </div>
+      <p style="margin-top: 1rem; color: #64748b; font-size: 0.85rem;">
+        ${generalizedJTBDs.length} jobs identified from ${analyzed.length} feedback items. Computed by Workers AI (Llama 3.1).
       </p>
     </div>
 
