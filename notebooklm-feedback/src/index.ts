@@ -103,6 +103,10 @@ export default {
           return handleStats(env, corsHeaders);
         case "/api/similar":
           return handleSimilar(request, env, corsHeaders);
+        case "/api/clusters":
+          return handleClusters(env, corsHeaders);
+        case "/clusters":
+          return handleDashboard(env, "clusters");
         default:
           return new Response("Not Found", { status: 404 });
       }
@@ -460,6 +464,84 @@ async function handleSimilar(request: Request, env: Env, corsHeaders: Record<str
   }
 }
 
+// API: Get cluster data for D3.js visualization using Vectorize
+async function handleClusters(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  try {
+    // Get all analyzed feedback
+    const result = await env.DB.prepare(
+      "SELECT id, content, source, sentiment, urgency, themes, job_to_be_done FROM feedback WHERE analyzed_at IS NOT NULL"
+    ).all();
+    const feedback = result.results as FeedbackEntry[];
+
+    if (feedback.length === 0) {
+      return Response.json({ nodes: [], links: [] }, { headers: corsHeaders });
+    }
+
+    // Build nodes
+    const nodes = feedback.map(f => ({
+      id: String(f.id),
+      content: f.content?.substring(0, 100) + "...",
+      source: f.source,
+      sentiment: parseInt(f.sentiment || "5"),
+      urgency: parseInt(f.urgency || "5"),
+      themes: f.themes ? JSON.parse(f.themes) : [],
+      jtbd: f.job_to_be_done
+    }));
+
+    // Use Vectorize to find similar feedback and create links
+    const links: { source: string; target: string; similarity: number }[] = [];
+    const SIMILARITY_THRESHOLD = 0.75; // Only connect if >75% similar
+
+    // For each feedback, query Vectorize for similar items
+    for (const node of nodes.slice(0, 20)) { // Limit to avoid timeout
+      try {
+        const fb = feedback.find(f => String(f.id) === node.id);
+        if (!fb) continue;
+
+        const embedding = await generateEmbedding(env, fb.content);
+        if (embedding.length === 0) continue;
+
+        const matches = await env.VECTORIZE.query(embedding, {
+          topK: 5,
+          returnMetadata: "all"
+        });
+
+        for (const match of matches.matches) {
+          if (match.id === node.id) continue; // Skip self
+          if (match.score >= SIMILARITY_THRESHOLD) {
+            // Avoid duplicate links
+            const existingLink = links.find(l =>
+              (l.source === node.id && l.target === match.id) ||
+              (l.source === match.id && l.target === node.id)
+            );
+            if (!existingLink) {
+              links.push({
+                source: node.id,
+                target: match.id,
+                similarity: Math.round(match.score * 100) / 100
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Vectorize query error:", e);
+      }
+    }
+
+    return Response.json({
+      nodes,
+      links,
+      stats: {
+        totalNodes: nodes.length,
+        totalLinks: links.length,
+        avgSimilarity: links.length > 0 ? (links.reduce((sum, l) => sum + l.similarity, 0) / links.length).toFixed(2) : 0
+      }
+    }, { headers: corsHeaders });
+  } catch (error) {
+    return Response.json({ error: String(error) }, { status: 500, headers: corsHeaders });
+  }
+}
+
 // Shared styles
 function getStyles(): string {
   return `
@@ -516,8 +598,9 @@ function getNav(activePage: string): string {
       <div class="nav-brand">NotebookLM Feedback</div>
       <div class="nav-links">
         <a href="/" class="nav-link ${activePage === 'overview' ? 'active' : ''}">Overview</a>
-        <a href="/feedback" class="nav-link ${activePage === 'feedback' ? 'active' : ''}">All Feedback</a>
-        <a href="/insights" class="nav-link ${activePage === 'insights' ? 'active' : ''}">JTBD Insights</a>
+        <a href="/clusters" class="nav-link ${activePage === 'clusters' ? 'active' : ''}">Clusters</a>
+        <a href="/feedback" class="nav-link ${activePage === 'feedback' ? 'active' : ''}">Feed</a>
+        <a href="/insights" class="nav-link ${activePage === 'insights' ? 'active' : ''}">JTBD</a>
       </div>
     </nav>
   `;
@@ -564,8 +647,11 @@ async function handleDashboard(env: Env, page: string): Promise<Response> {
 
   let content = '';
   if (page === 'overview') content = getOverviewPage(feedbackData, stats);
+  else if (page === 'clusters') content = getClustersPage();
   else if (page === 'feedback') content = getFeedbackPage(feedbackData);
   else if (page === 'insights') content = getInsightsPage(feedbackData, stats);
+
+  const extraScripts = page === 'clusters' ? '<script src="https://d3js.org/d3.v7.min.js"></script>' : '';
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -574,6 +660,7 @@ async function handleDashboard(env: Env, page: string): Promise<Response> {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NotebookLM Feedback - ${page}</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  ${extraScripts}
   <style>${getStyles()}</style>
 </head>
 <body>
@@ -700,6 +787,154 @@ function getOverviewPage(feedbackData: FeedbackEntry[], stats: any): string {
         data: { labels: Object.keys(sourceData), datasets: [{ data: Object.values(sourceData), backgroundColor: Object.keys(sourceData).map(s => sourceColors[s] || '#666') }] },
         options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { color: '#94a3b8' } } } }
       });
+    </script>
+  `;
+}
+
+// Cluster visualization page using D3.js + Vectorize similarity
+function getClustersPage(): string {
+  return `
+    <h1 class="page-title">Feedback Clusters</h1>
+    <p class="page-subtitle">Semantic similarity visualization powered by <strong>Vectorize</strong> + <strong>Workers AI</strong> embeddings</p>
+
+    <div class="card full-width" style="margin-bottom: 2rem;">
+      <h2>How it works</h2>
+      <p style="color: #94a3b8; font-size: 0.9rem;">
+        Each node is a feedback item. Nodes are connected when Vectorize determines they are >75% semantically similar.
+        <br>Color = sentiment (green=positive, yellow=neutral, red=negative). Size = urgency level.
+      </p>
+    </div>
+
+    <div class="card full-width">
+      <h2>Similarity Graph</h2>
+      <div id="cluster-graph" style="width: 100%; height: 600px; background: #0f172a; border-radius: 8px;"></div>
+      <div id="loading" style="text-align: center; padding: 2rem; color: #94a3b8;">Loading cluster data from Vectorize...</div>
+      <div id="node-details" style="display: none; margin-top: 1rem; padding: 1rem; background: #0f172a; border-radius: 8px; border: 1px solid #334155;">
+        <h3 style="color: #8b5cf6; margin-bottom: 0.5rem;">Selected Feedback</h3>
+        <p id="detail-content" style="margin-bottom: 0.5rem;"></p>
+        <p id="detail-meta" style="font-size: 0.85rem; color: #64748b;"></p>
+      </div>
+    </div>
+
+    <div class="legend" style="margin-top: 1rem;">
+      <div class="legend-item"><div class="legend-dot" style="background: #22c55e;"></div> Positive (7-10)</div>
+      <div class="legend-item"><div class="legend-dot" style="background: #eab308;"></div> Neutral (4-6)</div>
+      <div class="legend-item"><div class="legend-dot" style="background: #ef4444;"></div> Negative (0-3)</div>
+    </div>
+
+    <script>
+    async function loadClusters() {
+      try {
+        const res = await fetch('/api/clusters');
+        const data = await res.json();
+        document.getElementById('loading').style.display = 'none';
+
+        if (data.error || data.nodes.length === 0) {
+          document.getElementById('cluster-graph').innerHTML = '<p style="text-align: center; padding: 2rem; color: #ef4444;">No cluster data available. Make sure feedback is analyzed.</p>';
+          return;
+        }
+
+        renderGraph(data);
+      } catch (e) {
+        document.getElementById('loading').innerHTML = '<p style="color: #ef4444;">Error loading clusters: ' + e.message + '</p>';
+      }
+    }
+
+    function renderGraph(data) {
+      const container = document.getElementById('cluster-graph');
+      const width = container.clientWidth;
+      const height = 600;
+
+      const svg = d3.select('#cluster-graph')
+        .append('svg')
+        .attr('width', width)
+        .attr('height', height);
+
+      // Color scale based on sentiment
+      const getColor = (sentiment) => {
+        if (sentiment >= 7) return '#22c55e';
+        if (sentiment >= 4) return '#eab308';
+        return '#ef4444';
+      };
+
+      // Size based on urgency
+      const getRadius = (urgency) => 8 + (urgency * 1.5);
+
+      // Create force simulation
+      const simulation = d3.forceSimulation(data.nodes)
+        .force('link', d3.forceLink(data.links).id(d => d.id).distance(100).strength(d => d.similarity))
+        .force('charge', d3.forceManyBody().strength(-200))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide().radius(d => getRadius(d.urgency) + 5));
+
+      // Draw links
+      const link = svg.append('g')
+        .selectAll('line')
+        .data(data.links)
+        .join('line')
+        .attr('stroke', '#475569')
+        .attr('stroke-opacity', d => d.similarity)
+        .attr('stroke-width', d => d.similarity * 3);
+
+      // Draw nodes
+      const node = svg.append('g')
+        .selectAll('circle')
+        .data(data.nodes)
+        .join('circle')
+        .attr('r', d => getRadius(d.urgency))
+        .attr('fill', d => getColor(d.sentiment))
+        .attr('stroke', '#1e293b')
+        .attr('stroke-width', 2)
+        .style('cursor', 'pointer')
+        .call(d3.drag()
+          .on('start', dragstarted)
+          .on('drag', dragged)
+          .on('end', dragended));
+
+      // Tooltips
+      node.append('title').text(d => d.content);
+
+      // Click to show details
+      node.on('click', (event, d) => {
+        document.getElementById('node-details').style.display = 'block';
+        document.getElementById('detail-content').textContent = '"' + d.content + '"';
+        document.getElementById('detail-meta').innerHTML =
+          '<span style="color: ' + getColor(d.sentiment) + ';">Sentiment: ' + d.sentiment + '/10</span> | ' +
+          'Urgency: ' + d.urgency + '/10 | Source: ' + d.source +
+          (d.jtbd ? '<br><strong style="color: #8b5cf6;">JTBD:</strong> ' + d.jtbd : '');
+      });
+
+      // Update positions
+      simulation.on('tick', () => {
+        link
+          .attr('x1', d => d.source.x)
+          .attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x)
+          .attr('y2', d => d.target.y);
+        node
+          .attr('cx', d => Math.max(20, Math.min(width - 20, d.x)))
+          .attr('cy', d => Math.max(20, Math.min(height - 20, d.y)));
+      });
+
+      function dragstarted(event) {
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        event.subject.fx = event.subject.x;
+        event.subject.fy = event.subject.y;
+      }
+
+      function dragged(event) {
+        event.subject.fx = event.x;
+        event.subject.fy = event.y;
+      }
+
+      function dragended(event) {
+        if (!event.active) simulation.alphaTarget(0);
+        event.subject.fx = null;
+        event.subject.fy = null;
+      }
+    }
+
+    loadClusters();
     </script>
   `;
 }
