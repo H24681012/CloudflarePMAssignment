@@ -209,6 +209,29 @@ And then switching back and forth between local and remote modes for no apparent
 
 ---
 
+## Friction Point #8: Workers Can't Send Emails
+
+**Product**: Cloudflare Workers / Email
+
+**Title**: No native way to send outbound emails from Workers
+
+**Problem**:
+I wanted to build a feature where the PM receives a weekly email digest of feedback insights. Cloudflare has "Email Workers" but that's only for RECEIVING emails, not sending them. There's no built-in way to send outbound emails from a Worker.
+
+To actually send emails, I'd have to sign up for a third-party service like SendGrid, Resend, or Mailchimp, get API keys, and integrate that. That's a lot of extra work for a basic feature.
+
+**Impact**:
+- Couldn't build the email notification feature I wanted
+- Had to settle for just showing the digest on the website
+- Would add extra cost and complexity if I wanted real email functionality
+
+**Suggestion**:
+1. Add a native "Email Send" binding similar to how D1 or KV works - `env.EMAIL.send(to, subject, body)`
+2. Or integrate with an existing email provider (Mailchannels?) and make it available as a binding
+3. At minimum, document this limitation clearly so developers know upfront they need a third-party service
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -242,9 +265,9 @@ And then switching back and forth between local and remote modes for no apparent
 | Documentation | 1 |
 | D1 Database | 1 |
 | Workers AI | 1 |
-| Dashboard UI | 0 |
+| Email/Workers | 1 |
 
-**Total Friction Points**: 7
+**Total Friction Points**: 8
 
 ---
 
