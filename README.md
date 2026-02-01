@@ -124,28 +124,6 @@ See **[FRICTION_LOG.md](./FRICTION_LOG.md)** for 11 detailed friction points enc
 
 ---
 
-## Key Design Decisions
-
-### 1. JTBD Computed On-Demand, Never Stored
-
-**Decision**: Jobs-to-be-Done are computed by AI at runtime, not stored in the database.
-
-**Rationale**: The database stores only raw feedback (INPUTS). JTBD statements are analytical OUTPUTS that should be generated from the source data, not pre-computed and cached. This ensures insights are always derived from the ground truth.
-
-### 2. Generalized Jobs Instead of Per-Feedback Jobs
-
-**Decision**: Generate 2-3 high-level JTBD statements that represent patterns across all feedback, rather than individual jobs per feedback item.
-
-**Rationale**: Product decisions are made on themes, not individual complaints. Generalized jobs following the Christensen framework provide actionable insights for roadmap prioritization.
-
-### 3. Semantic Clustering via Vectorize
-
-**Decision**: Use vector embeddings to cluster similar feedback rather than keyword matching.
-
-**Rationale**: Customers express the same pain point in many different ways. Semantic similarity captures meaning, not just words. "Audio quality is terrible" and "The voices sound robotic" cluster together even though they share no keywords.
-
----
-
 ## Running Locally
 
 ```bash

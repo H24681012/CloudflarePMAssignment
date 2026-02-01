@@ -80,6 +80,15 @@ When the dashboard loads:
 2. For the JTBD page, Workers AI generates job statements on-demand
 3. For clustering, Vectorize finds similar feedback pairs
 
+## Worker Bindings Screenshot
+
+*[See attached screenshot: Cloudflare Dashboard showing Worker bindings configuration]*
+
+The screenshot shows the `notebooklm-feedback` Worker connected to three Cloudflare products:
+- **Workers AI** (binding: `AI`) - For ML inference
+- **D1 Database** (binding: `DB`) - For data storage
+- **Vectorize Index** (binding: `VECTORIZE`) - For semantic search
+
 ---
 
 # Development Process
@@ -275,41 +284,39 @@ I spent several minutes wondering if my code was broken before realizing the ser
 
 ---
 
-## Friction Point #5: Local and Remote Databases Are Silently Separate
+## Friction Point #5: Local and Remote Database Error Messages Are Unhelpful
 
 **Product**: D1 Database / Wrangler CLI
 
 **Problem**:
 
-I spent time setting up my database schema using `--local` mode, creating tables, and testing queries. Everything worked fine. Then when I deployed and switched to `--remote` mode to test with real Cloudflare services, I got a confusing error:
+I spent time setting up my database schema using `--local` mode, creating tables, and testing queries. Everything worked fine. Then when I deployed and switched to `--remote` mode to test with real Cloudflare services, I got this error:
 
 ```
 D1_ERROR: no such table: feedback
 ```
 
-I was confused—I had just created that table and it was working moments ago. After significant debugging, I discovered that the local D1 database and the remote D1 database are completely separate instances. Any tables I created locally don't exist on the remote version.
+While the Cloudflare documentation does mention that local and remote D1 are separate ("wrangler dev separates local and production data"), the error message itself provides no hint that this is a local/remote issue. It just says the table doesn't exist—leaving you to figure out why on your own.
 
-There was no warning when switching between modes, and the error message didn't hint at this being a local/remote issue. It just said the table didn't exist.
+A developer who missed that one sentence in the docs (or who's moving quickly through the getting started flow) will waste significant time debugging this. The error should connect the dots for you.
 
 **Impact**:
 - Wasted 15+ minutes trying to figure out why my tables "disappeared"
 - Had to re-run all my database setup commands with the `--remote` flag
-- Really confusing for someone new to Cloudflare who doesn't know about this separation
-- The mental model of "one database" is broken without any explanation
+- The generic error message doesn't point you toward the solution
+- Easy to miss the documentation note about separation when you're focused on building
 
 **Suggestion**:
 
-1. When switching between local and remote modes, show a clear heads-up: "Note: Local and remote databases are separate. Make sure you've run your migrations on both."
+1. Improve the error message: Instead of just "no such table: feedback", say something like "Table 'feedback' not found in the REMOTE database. If you created tables locally, you need to run migrations with the --remote flag. See: docs.cloudflare.com/d1/local-development"
 
-2. Improve the error message: Instead of just "no such table: feedback", say something like "Table 'feedback' not found in the REMOTE database. If you created tables locally, you may need to run migrations with the --remote flag."
+2. When `wrangler dev` starts in remote mode after previously running locally, show a reminder: "Note: Remote D1 is separate from local. Run migrations with --remote if needed."
 
 3. Add a `wrangler d1 sync` command that copies your local schema to remote (or vice versa) so developers don't have to manually re-run migrations
 
-4. Document this local/remote separation prominently in the D1 getting started guide
-
 ---
 
-## Friction Point #6: AI Binding Shows "Not Supported" Without Explanation
+## Friction Point #6: AI Binding Message Is Confusing
 
 **Product**: Workers AI / Wrangler CLI
 
@@ -323,23 +330,27 @@ env.VECTORIZE                        Vectorize Index
 env.AI                               AI               not supported
 ```
 
-The "not supported" message gave no explanation of WHY it's not supported or WHAT to do about it. I initially thought my AI binding was configured incorrectly and spent time checking my wrangler.jsonc file.
+The "not supported" label gave no context. I didn't know if this meant:
+- My configuration was wrong
+- AI doesn't work at all locally
+- I need to do something specific to enable it
+- It would work anyway despite the message
 
-Eventually, through online searching, I discovered that you need to add the `--remote` flag to make AI work: `npx wrangler dev --remote`. But even this wasn't obvious—the documentation for Workers AI doesn't prominently mention this requirement.
+After some trial and error, I discovered that adding the `--remote` flag makes everything work. But the message "not supported" is ambiguous—it sounds like a hard blocker rather than something that has a simple workaround.
 
 **Impact**:
-- Thought my AI setup was broken when it actually wasn't
-- Wasted time debugging a non-existent configuration problem
-- Had to search online to discover the `--remote` flag
-- Frustrating user experience—being told something doesn't work without being told how to make it work
+- Initially thought my AI binding was misconfigured
+- Spent time reviewing wrangler.jsonc unnecessarily
+- The message creates uncertainty—you don't know if you should proceed or troubleshoot
+- Had to experiment to discover the `--remote` solution
 
 **Suggestion**:
 
-1. Change the "not supported" message to something actionable: "AI binding requires remote mode. Run `npx wrangler dev --remote` to test AI features."
+1. Change the "not supported" message to be actionable: "AI binding requires remote mode. Run `npx wrangler dev --remote` to test AI features."
 
-2. Better yet, automatically use remote mode for AI calls while keeping other bindings (like D1) local. This would give the best of both worlds.
+2. Or if AI does work locally in some configurations, clarify the message: "AI (local simulation)" vs "AI (remote - connected to account)"
 
-3. Add a prominent note in the Workers AI documentation that local dev mode doesn't support AI inference and explain the --remote workaround
+3. The bindings table is the first thing developers see—use it to guide them, not confuse them
 
 ---
 
