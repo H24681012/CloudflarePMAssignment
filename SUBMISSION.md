@@ -80,11 +80,9 @@ When the dashboard loads:
 2. For the JTBD page, Workers AI generates job statements on-demand
 3. For clustering, Vectorize finds similar feedback pairs
 
-## Worker Bindings Screenshot
+## Worker Bindings
 
-*[See attached screenshot: Cloudflare Dashboard showing Worker bindings configuration]*
-
-The screenshot shows the `notebooklm-feedback` Worker connected to three Cloudflare products:
+The Worker is connected to three Cloudflare products (see screenshot at the bottom of this PDF):
 - **Workers AI** (binding: `AI`) - For ML inference
 - **D1 Database** (binding: `DB`) - For data storage
 - **Vectorize Index** (binding: `VECTORIZE`) - For semantic search
