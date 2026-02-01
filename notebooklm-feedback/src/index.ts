@@ -32,6 +32,22 @@ interface AIAnalysis {
   sentiment: number;
   urgency: number;
   themes: string[];
+  notebooklm_feedback_db: D1Database;
+  AI: Ai;
+}
+
+// Feedback entry type
+interface FeedbackEntry {
+  id?: number;
+  source: string;
+  content: string;
+  author?: string;
+  url?: string;
+  sentiment?: string;
+  themes?: string;
+  urgency?: string;
+  created_at?: string;
+  analyzed_at?: string;
 }
 
 // JTBD is computed separately and never stored - it's an OUTPUT, not INPUT
@@ -121,6 +137,59 @@ export default {
     } catch (error) {
       console.error("Error:", error);
       return Response.json({ error: String(error) }, { status: 500, headers: corsHeaders });
+    // Add CORS headers for all responses
+    const corsHeaders = {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    };
+
+    // Handle CORS preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    try {
+      // Simple router
+      switch (url.pathname) {
+        case "/":
+          return handleHome(request);
+
+        case "/api/health":
+          return handleHealth(corsHeaders);
+
+        case "/api/feedback":
+          if (request.method === "GET") {
+            return handleGetFeedback(env, url, corsHeaders);
+          } else if (request.method === "POST") {
+            return handlePostFeedback(request, env, corsHeaders);
+          }
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+
+        case "/api/stats":
+          return handleStats(env, corsHeaders);
+
+        case "/api/analyze":
+          if (request.method === "POST") {
+            return handleAnalyze(request, env, corsHeaders);
+          }
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+
+        case "/api/analyze-all":
+          if (request.method === "POST") {
+            return handleAnalyzeAll(env, corsHeaders);
+          }
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+
+        default:
+          return new Response("Not Found", { status: 404, headers: corsHeaders });
+      }
+    } catch (error) {
+      console.error("Error:", error);
+      return Response.json(
+        { error: "Internal server error", details: String(error) },
+        { status: 500, headers: corsHeaders }
+      );
     }
   },
 };
@@ -928,6 +997,16 @@ function getOverviewPage(feedbackData: FeedbackEntry[], stats: any): string {
           ${Object.entries(sourceColors).map(([s, c]) => `<div class="legend-item"><div class="legend-dot" style="background: ${c};"></div> ${s}</div>`).join('')}
         </div>
       </div>
+    <div class="endpoints">
+      <h3>Available Endpoints:</h3>
+      <code>GET / - This page</code>
+      <code>GET /api/health - Health check</code>
+      <code>GET /api/feedback - List all feedback</code>
+      <code>GET /api/feedback?source=reddit - Filter by source</code>
+      <code>POST /api/feedback - Add new feedback</code>
+      <code>GET /api/stats - Get feedback statistics</code>
+      <code>POST /api/analyze - Analyze text with AI</code>
+      <code>POST /api/analyze-all - Analyze all unanalyzed feedback</code>
     </div>
 
     <div class="grid">
@@ -1510,4 +1589,242 @@ function getDigestPage(feedbackData: FeedbackEntry[], stats: any): string {
     '</div>' +
     '</div>' +
     script;
+// Health check endpoint
+function handleHealth(corsHeaders: Record<string, string>): Response {
+  return Response.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    service: "notebooklm-feedback",
+    version: "1.0.0",
+  }, { headers: corsHeaders });
+}
+
+// GET /api/feedback - List feedback with optional filtering
+async function handleGetFeedback(
+  env: Env,
+  url: URL,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const source = url.searchParams.get("source");
+  const sentiment = url.searchParams.get("sentiment");
+  const limit = parseInt(url.searchParams.get("limit") || "50");
+
+  let query = "SELECT * FROM feedback";
+  const params: string[] = [];
+  const conditions: string[] = [];
+
+  if (source) {
+    conditions.push("source = ?");
+    params.push(source);
+  }
+  if (sentiment) {
+    conditions.push("sentiment = ?");
+    params.push(sentiment);
+  }
+
+  if (conditions.length > 0) {
+    query += " WHERE " + conditions.join(" AND ");
+  }
+
+  query += " ORDER BY created_at DESC LIMIT ?";
+  params.push(String(limit));
+
+  const result = await env.notebooklm_feedback_db.prepare(query).bind(...params).all();
+
+  return Response.json({
+    success: true,
+    count: result.results.length,
+    feedback: result.results,
+  }, { headers: corsHeaders });
+}
+
+// POST /api/feedback - Add new feedback
+async function handlePostFeedback(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const body = await request.json() as FeedbackEntry;
+
+  // Validate required fields
+  if (!body.source || !body.content) {
+    return Response.json(
+      { success: false, error: "Missing required fields: source and content" },
+      { status: 400, headers: corsHeaders }
+    );
+  }
+
+  // Validate source
+  const validSources = ["reddit", "twitter", "producthunt", "appstore", "forums", "discord", "github", "email"];
+  if (!validSources.includes(body.source.toLowerCase())) {
+    return Response.json(
+      { success: false, error: `Invalid source. Must be one of: ${validSources.join(", ")}` },
+      { status: 400, headers: corsHeaders }
+    );
+  }
+
+  const result = await env.notebooklm_feedback_db
+    .prepare(
+      `INSERT INTO feedback (source, content, author, url, sentiment, themes, urgency)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .bind(
+      body.source.toLowerCase(),
+      body.content,
+      body.author || null,
+      body.url || null,
+      body.sentiment || null,
+      body.themes || null,
+      body.urgency || "medium"
+    )
+    .run();
+
+  return Response.json({
+    success: true,
+    message: "Feedback added successfully",
+    id: result.meta.last_row_id,
+  }, { status: 201, headers: corsHeaders });
+}
+
+// GET /api/stats - Get feedback statistics
+async function handleStats(
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  // Get counts by source
+  const bySource = await env.notebooklm_feedback_db
+    .prepare("SELECT source, COUNT(*) as count FROM feedback GROUP BY source")
+    .all();
+
+  // Get counts by sentiment
+  const bySentiment = await env.notebooklm_feedback_db
+    .prepare("SELECT sentiment, COUNT(*) as count FROM feedback GROUP BY sentiment")
+    .all();
+
+  // Get total count
+  const total = await env.notebooklm_feedback_db
+    .prepare("SELECT COUNT(*) as count FROM feedback")
+    .first();
+
+  return Response.json({
+    success: true,
+    stats: {
+      total: total?.count || 0,
+      bySource: bySource.results,
+      bySentiment: bySentiment.results,
+    },
+  }, { headers: corsHeaders });
+}
+
+// POST /api/analyze - Analyze a single piece of text with AI
+async function handleAnalyze(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const body = await request.json() as { text: string };
+
+  if (!body.text) {
+    return Response.json(
+      { success: false, error: "Missing required field: text" },
+      { status: 400, headers: corsHeaders }
+    );
+  }
+
+  const analysis = await analyzeWithAI(env, body.text);
+
+  return Response.json({
+    success: true,
+    analysis,
+  }, { headers: corsHeaders });
+}
+
+// POST /api/analyze-all - Analyze all unanalyzed feedback entries
+async function handleAnalyzeAll(
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  // Get all feedback that hasn't been analyzed yet
+  const unanalyzed = await env.notebooklm_feedback_db
+    .prepare("SELECT id, content FROM feedback WHERE analyzed_at IS NULL LIMIT 10")
+    .all();
+
+  if (unanalyzed.results.length === 0) {
+    return Response.json({
+      success: true,
+      message: "No unanalyzed feedback found",
+      analyzed: 0,
+    }, { headers: corsHeaders });
+  }
+
+  let analyzedCount = 0;
+
+  for (const entry of unanalyzed.results as { id: number; content: string }[]) {
+    try {
+      const analysis = await analyzeWithAI(env, entry.content);
+
+      // Update the feedback entry with analysis results
+      await env.notebooklm_feedback_db
+        .prepare(
+          `UPDATE feedback
+           SET sentiment = ?, themes = ?, urgency = ?, analyzed_at = datetime('now')
+           WHERE id = ?`
+        )
+        .bind(analysis.sentiment, analysis.themes, analysis.urgency, entry.id)
+        .run();
+
+      analyzedCount++;
+    } catch (error) {
+      console.error(`Failed to analyze feedback ${entry.id}:`, error);
+    }
+  }
+
+  return Response.json({
+    success: true,
+    message: `Analyzed ${analyzedCount} feedback entries`,
+    analyzed: analyzedCount,
+  }, { headers: corsHeaders });
+}
+
+// Helper function to analyze text with Workers AI
+async function analyzeWithAI(
+  env: Env,
+  text: string
+): Promise<{ sentiment: string; themes: string; urgency: string; summary: string }> {
+  const prompt = `Analyze this user feedback about NotebookLM (Google's AI notebook tool):
+
+"${text}"
+
+Respond in JSON format only, no other text:
+{
+  "sentiment": "positive" or "negative" or "neutral",
+  "themes": "comma-separated list of 1-3 main themes like: usability, feature-request, bug, performance, pricing, documentation",
+  "urgency": "low" or "medium" or "high" or "critical",
+  "summary": "one sentence summary of the feedback"
+}`;
+
+  const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+    prompt,
+    max_tokens: 200,
+  });
+
+  // Parse the AI response
+  try {
+    const responseText = (response as { response: string }).response;
+    // Extract JSON from the response (in case there's extra text)
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+  } catch (error) {
+    console.error("Failed to parse AI response:", error);
+  }
+
+  // Return defaults if parsing fails
+  return {
+    sentiment: "neutral",
+    themes: "general",
+    urgency: "medium",
+    summary: "Unable to analyze",
+  };
 }

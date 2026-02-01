@@ -29,4 +29,20 @@
       "index_name": "feedback-embeddings"
     }
   ]
+	"name": "notebooklm-feedback",
+	"main": "src/index.ts",
+	"compatibility_date": "2024-12-30",
+	"observability": {
+		"enabled": true
+	},
+	"d1_databases": [
+		{
+			"binding": "notebooklm_feedback_db",
+			"database_name": "notebooklm-feedback-db",
+			"database_id": "ca6bf71b-5131-46fc-8bd3-09e54a9313d1"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	}
 }
