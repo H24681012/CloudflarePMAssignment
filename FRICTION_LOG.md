@@ -61,6 +61,38 @@ This leaves a corrupted/partial project folder that's difficult to remove and ca
 
 ---
 
+## Friction Point #3: npx Wrangler Install Loop
+
+**Product**: Cloudflare Workers / Wrangler CLI / npx
+
+**Title**: npx repeatedly prompts to install wrangler, never caches it
+
+**Problem**:
+Every time you run any `npx wrangler` command, it prompts:
+```
+Need to install the following packages:
+wrangler@4.61.1
+Ok to proceed? (y)
+```
+
+After pressing `y`, it installs, shows cleanup errors, then the next command asks to install again. This creates an infinite loop where wrangler never stays installed.
+
+Combined with the ARM64/cleanup issues, this makes the CLI essentially unusable on affected systems.
+
+**Impact**:
+- Cannot run any wrangler commands
+- Complete blocker for development
+- Extremely frustrating user experience
+- Wasted time re-downloading the same package repeatedly
+
+**Suggestion**:
+1. Fix the underlying caching issue so npx remembers installed packages
+2. Recommend installing wrangler globally (`npm install -g wrangler`) in the getting started docs
+3. Add a troubleshooting section for this common issue
+4. Consider bundling wrangler differently to avoid npx caching problems
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -90,13 +122,13 @@ This leaves a corrupted/partial project folder that's difficult to remove and ca
 
 | Category | Count |
 |----------|-------|
-| CLI/Tooling | 2 |
+| CLI/Tooling | 3 |
 | Documentation | 0 |
 | Dashboard UI | 0 |
 | API/SDK | 0 |
 | Error Messages | 0 |
 
-**Total Friction Points**: 2
+**Total Friction Points**: 3
 
 ---
 
