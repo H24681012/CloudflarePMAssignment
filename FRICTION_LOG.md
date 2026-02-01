@@ -154,6 +154,183 @@ This workaround is not documented anywhere in Cloudflare's getting started guide
 
 ---
 
+## Friction Point #5: Local and Remote Databases Don't Talk to Each Other
+
+**Product**: D1 Database / Wrangler CLI
+
+**Title**: Running migrations locally doesn't set up the remote database
+
+**Problem**:
+I spent time setting up my database schema using `--local` mode, and everything worked fine. Then when I switched to `--remote` mode to test with real Cloudflare services, I got a confusing error: "no such table: feedback".
+
+Turns out, the local D1 database and the remote D1 database are completely separate. Any tables I created locally don't exist on the remote version. There's no warning when you switch modes, and the error message doesn't hint at what's actually wrong.
+
+**Impact**:
+- Wasted 15+ minutes trying to figure out why my tables disappeared
+- Had to re-run all my database setup commands with the `--remote` flag
+- Really confusing for someone new to Cloudflare who doesn't know about this local/remote split
+
+**Suggestion**:
+1. When switching between local and remote modes, show a heads-up like: "Note: Local and remote databases are separate. Make sure you've run your migrations on both."
+2. Better error message: Instead of just "no such table", say something like "Table 'feedback' not found. If you set up tables locally, you may need to run migrations with --remote too."
+3. Maybe add a `wrangler d1 sync` command that copies your local schema to remote (or vice versa)
+
+---
+
+## Friction Point #6: AI Binding Says "Not Supported" With No Explanation
+
+**Product**: Workers AI / Wrangler CLI
+
+**Title**: Local dev mode shows AI as "not supported" without telling you what to do
+
+**Problem**:
+When running `npx wrangler dev`, the terminal shows:
+```
+env.AI                               AI               not supported
+```
+
+There's no explanation of WHY it's not supported or HOW to actually test AI features. I had to figure out on my own that you need to add `--remote` to the command to make AI work. But even then, the remote mode kept disconnecting.
+
+**Impact**:
+- Thought my AI setup was broken when it wasn't
+- Wasted time debugging something that wasn't actually an error
+- Had to search online to discover the `--remote` flag
+
+**Suggestion**:
+1. Change the message to something helpful: "AI binding requires remote mode. Run `npx wrangler dev --remote` to test AI features."
+2. Or better yet, automatically use remote mode for AI calls while keeping everything else local
+3. Add a note in the Workers AI docs that local dev doesn't support AI
+
+---
+
+## Friction Point #7: Dev Server Keeps Disconnecting and Switching Modes
+
+**Product**: Wrangler CLI / Local Development
+
+**Title**: Remote preview randomly shuts down mid-session
+
+**Problem**:
+While running `npx wrangler dev --remote`, the server kept showing:
+```
+Shutting down remote preview...
+```
+
+And then switching back and forth between local and remote modes for no apparent reason. The terminal would show the bindings table multiple times as it kept reconnecting. This made testing really frustrating because I never knew if I was hitting the local or remote database.
+
+**Impact**:
+- Never sure if my code was actually running against real Cloudflare services
+- Had to restart the dev server multiple times
+- Made debugging really confusing
+
+**Suggestion**:
+1. Make the remote connection more stable - if it disconnects, auto-reconnect silently
+2. Show a clearer indicator in the terminal of which mode you're currently in
+3. Add an option like `--remote-only` that refuses to fall back to local mode so you know something's wrong
+
+---
+
+## Friction Point #8: Workers Can't Send Emails
+
+**Product**: Cloudflare Workers / Email
+
+**Title**: No native way to send outbound emails from Workers
+
+**Problem**:
+I wanted to build a feature where the PM receives a weekly email digest of feedback insights. Cloudflare has "Email Workers" but that's only for RECEIVING emails, not sending them. There's no built-in way to send outbound emails from a Worker.
+
+To actually send emails, I'd have to sign up for a third-party service like SendGrid, Resend, or Mailchimp, get API keys, and integrate that. That's a lot of extra work for a basic feature.
+
+**Impact**:
+- Couldn't build the email notification feature I wanted
+- Had to settle for just showing the digest on the website
+- Would add extra cost and complexity if I wanted real email functionality
+
+**Suggestion**:
+1. Add a native "Email Send" binding similar to how D1 or KV works - `env.EMAIL.send(to, subject, body)`
+2. Or integrate with an existing email provider (Mailchannels?) and make it available as a binding
+3. At minimum, document this limitation clearly so developers know upfront they need a third-party service
+
+---
+
+## Friction Point #9: API Token Permissions Are Confusing
+
+**Product**: Cloudflare Dashboard / API Tokens
+
+**Title**: Unclear which permission level (Read vs Edit) is needed for each product
+
+**Problem**:
+When creating an API token for deployment, it's not obvious which permission level each product needs:
+- Vectorize requires **Edit** to call `upsert()`, but this isn't documented
+- Workers AI only needs **Read** for inference, but it's not clear from the UI
+- The "Edit Cloudflare Workers" template doesn't include Vectorize permissions at all
+
+I set up Vectorize with "Read" permission and got a cryptic permission denied error when trying to store embeddings.
+
+**Impact**:
+- Wasted 10+ minutes debugging permission issues
+- Had to trial-and-error different permission combinations
+- No clear feedback on which specific permission was missing
+
+**Suggestion**:
+1. Add tooltips in the token creation UI explaining what each permission level allows
+2. When a permission error occurs, include which permission is needed in the error message
+3. Update the "Edit Cloudflare Workers" template to include all common bindings (D1, AI, Vectorize, KV)
+
+---
+
+## Friction Point #10: 500 Errors Provide No Useful Debug Information
+
+**Product**: Cloudflare Workers / Error Handling
+
+**Title**: Worker errors return generic 500 with no stack trace or details
+
+**Problem**:
+When my `/api/seed` endpoint failed, the browser just showed a 500 error with no details. I had to:
+1. Wrap everything in try-catch
+2. Manually stringify errors
+3. Use `curl` to see the actual JSON error response
+
+The actual error was "D1_ERROR: no such column: job_to_be_done" - useful info that was hidden behind a generic 500.
+
+**Impact**:
+- Significant time spent debugging blind
+- Had to add verbose error handling throughout the codebase
+- Production errors would be impossible to diagnose without extensive logging
+
+**Suggestion**:
+1. In development mode, return full error details including stack traces
+2. Add a `--verbose` flag to `wrangler dev` that shows detailed error responses
+3. Provide a standard error response format: `{ error: string, code: string, stack?: string }`
+
+---
+
+## Friction Point #11: No Guidance on AI Rate Limits During Batch Operations
+
+**Product**: Workers AI
+
+**Title**: Seeding data with multiple AI calls risks timeout without clear limits
+
+**Problem**:
+My seed function calls Workers AI for each of 30 feedback items (sentiment analysis + embedding). This could easily hit:
+- CPU time limits
+- AI rate limits
+- Request timeout limits
+
+There's no documentation on best practices for batch AI operations, recommended batch sizes, or how to handle rate limiting gracefully.
+
+**Impact**:
+- Had to guess at safe batch sizes
+- Risk of partial data corruption if seed times out mid-way
+- No way to know if I'm approaching limits until I hit them
+
+**Suggestion**:
+1. Document CPU/rate limits clearly for Workers AI operations
+2. Provide a "batch processing" example in the Workers AI docs
+3. Add response headers showing remaining quota/rate limits
+4. Consider a native batch API: `env.AI.runBatch([...prompts])`
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -183,6 +360,14 @@ This workaround is not documented anywhere in Cloudflare's getting started guide
 
 | Category | Count |
 |----------|-------|
+| CLI/Tooling | 5 |
+| D1 Database | 1 |
+| Workers AI | 2 |
+| Email/Workers | 1 |
+| Dashboard/API Tokens | 1 |
+| Error Handling | 1 |
+
+**Total Friction Points**: 11
 | CLI/Tooling | 4 |
 | Documentation | 0 |
 | CLI/Tooling | 3 |
