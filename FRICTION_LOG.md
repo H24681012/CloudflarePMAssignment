@@ -157,6 +157,58 @@ Turns out, the local D1 database and the remote D1 database are completely separ
 
 ---
 
+## Friction Point #6: AI Binding Says "Not Supported" With No Explanation
+
+**Product**: Workers AI / Wrangler CLI
+
+**Title**: Local dev mode shows AI as "not supported" without telling you what to do
+
+**Problem**:
+When running `npx wrangler dev`, the terminal shows:
+```
+env.AI                               AI               not supported
+```
+
+There's no explanation of WHY it's not supported or HOW to actually test AI features. I had to figure out on my own that you need to add `--remote` to the command to make AI work. But even then, the remote mode kept disconnecting.
+
+**Impact**:
+- Thought my AI setup was broken when it wasn't
+- Wasted time debugging something that wasn't actually an error
+- Had to search online to discover the `--remote` flag
+
+**Suggestion**:
+1. Change the message to something helpful: "AI binding requires remote mode. Run `npx wrangler dev --remote` to test AI features."
+2. Or better yet, automatically use remote mode for AI calls while keeping everything else local
+3. Add a note in the Workers AI docs that local dev doesn't support AI
+
+---
+
+## Friction Point #7: Dev Server Keeps Disconnecting and Switching Modes
+
+**Product**: Wrangler CLI / Local Development
+
+**Title**: Remote preview randomly shuts down mid-session
+
+**Problem**:
+While running `npx wrangler dev --remote`, the server kept showing:
+```
+Shutting down remote preview...
+```
+
+And then switching back and forth between local and remote modes for no apparent reason. The terminal would show the bindings table multiple times as it kept reconnecting. This made testing really frustrating because I never knew if I was hitting the local or remote database.
+
+**Impact**:
+- Never sure if my code was actually running against real Cloudflare services
+- Had to restart the dev server multiple times
+- Made debugging really confusing
+
+**Suggestion**:
+1. Make the remote connection more stable - if it disconnects, auto-reconnect silently
+2. Show a clearer indicator in the terminal of which mode you're currently in
+3. Add an option like `--remote-only` that refuses to fall back to local mode so you know something's wrong
+
+---
+
 ## Friction Points To Document (Encountered Later)
 
 <!-- Add more friction points as you encounter them during development -->
@@ -186,13 +238,13 @@ Turns out, the local D1 database and the remote D1 database are completely separ
 
 | Category | Count |
 |----------|-------|
-| CLI/Tooling | 3 |
+| CLI/Tooling | 5 |
 | Documentation | 1 |
 | D1 Database | 1 |
+| Workers AI | 1 |
 | Dashboard UI | 0 |
-| API/SDK | 0 |
 
-**Total Friction Points**: 5
+**Total Friction Points**: 7
 
 ---
 
