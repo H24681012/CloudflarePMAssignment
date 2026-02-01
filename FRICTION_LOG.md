@@ -93,6 +93,26 @@ Combined with the ARM64/cleanup issues, this makes the CLI essentially unusable 
 
 ---
 
+## Friction Point #4: Local Server Doesn't Update When I Change Code
+
+**Product**: Wrangler CLI (local development server)
+
+**Title**: Had to restart the server manually to see my code changes
+
+**Problem**:
+I edited my code to add new features, but when I tested them in the browser, they weren't there. The local development server was supposed to automatically detect my changes and reload, but it didn't. I spent time wondering if my code was broken before realizing the server just wasn't picking up the changes.
+
+I had to manually stop the server and start it again to see my updates.
+
+**Impact**:
+- Wasted time debugging code that was actually fine
+- Frustrating when you expect "save and refresh" to just work
+- Breaks the development flow - you lose momentum stopping and restarting
+
+**Suggestion**:
+1. Make the auto-reload actually work when files change
+2. Show a message in the terminal like "Detected changes, reloading..." so I know it's working
+3. Add a keyboard shortcut (like pressing `r`) to manually trigger a reload without fully restarting
 ## Friction Point #4: Windows ARM64 Requires WSL Workaround
 
 **Product**: Cloudflare Workers / Wrangler CLI / Developer Onboarding
@@ -163,6 +183,8 @@ This workaround is not documented anywhere in Cloudflare's getting started guide
 
 | Category | Count |
 |----------|-------|
+| CLI/Tooling | 4 |
+| Documentation | 0 |
 | CLI/Tooling | 3 |
 | Documentation | 1 |
 | Dashboard UI | 0 |

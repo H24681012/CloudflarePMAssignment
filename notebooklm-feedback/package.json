@@ -9,7 +9,12 @@
     "deploy": "wrangler deploy",
     "cf-typegen": "wrangler types"
   },
-  "keywords": ["cloudflare", "workers", "feedback", "notebooklm"],
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "feedback",
+    "notebooklm"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
