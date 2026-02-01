@@ -7,14 +7,13 @@
  * Cloudflare Products Used:
  * - Workers: Hosting and API
  * - D1: Database for storing feedback
- * - Workers AI: Sentiment analysis and theme extraction (coming soon)
+ * - Workers AI: Sentiment analysis and theme extraction
  */
 
 // Type definitions for our environment bindings
 export interface Env {
   notebooklm_feedback_db: D1Database;
-  // Workers AI - uncomment when configured
-  // AI: Ai;
+  AI: Ai;
 }
 
 // Feedback entry type
@@ -67,6 +66,18 @@ export default {
 
         case "/api/stats":
           return handleStats(env, corsHeaders);
+
+        case "/api/analyze":
+          if (request.method === "POST") {
+            return handleAnalyze(request, env, corsHeaders);
+          }
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders });
+
+        case "/api/analyze-all":
+          if (request.method === "POST") {
+            return handleAnalyzeAll(env, corsHeaders);
+          }
+          return new Response("Method not allowed", { status: 405, headers: corsHeaders });
 
         default:
           return new Response("Not Found", { status: 404, headers: corsHeaders });
@@ -161,6 +172,8 @@ function handleHome(request: Request): Response {
       <code>GET /api/feedback?source=reddit - Filter by source</code>
       <code>POST /api/feedback - Add new feedback</code>
       <code>GET /api/stats - Get feedback statistics</code>
+      <code>POST /api/analyze - Analyze text with AI</code>
+      <code>POST /api/analyze-all - Analyze all unanalyzed feedback</code>
     </div>
   </div>
 </body>
@@ -297,4 +310,117 @@ async function handleStats(
       bySentiment: bySentiment.results,
     },
   }, { headers: corsHeaders });
+}
+
+// POST /api/analyze - Analyze a single piece of text with AI
+async function handleAnalyze(
+  request: Request,
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  const body = await request.json() as { text: string };
+
+  if (!body.text) {
+    return Response.json(
+      { success: false, error: "Missing required field: text" },
+      { status: 400, headers: corsHeaders }
+    );
+  }
+
+  const analysis = await analyzeWithAI(env, body.text);
+
+  return Response.json({
+    success: true,
+    analysis,
+  }, { headers: corsHeaders });
+}
+
+// POST /api/analyze-all - Analyze all unanalyzed feedback entries
+async function handleAnalyzeAll(
+  env: Env,
+  corsHeaders: Record<string, string>
+): Promise<Response> {
+  // Get all feedback that hasn't been analyzed yet
+  const unanalyzed = await env.notebooklm_feedback_db
+    .prepare("SELECT id, content FROM feedback WHERE analyzed_at IS NULL LIMIT 10")
+    .all();
+
+  if (unanalyzed.results.length === 0) {
+    return Response.json({
+      success: true,
+      message: "No unanalyzed feedback found",
+      analyzed: 0,
+    }, { headers: corsHeaders });
+  }
+
+  let analyzedCount = 0;
+
+  for (const entry of unanalyzed.results as { id: number; content: string }[]) {
+    try {
+      const analysis = await analyzeWithAI(env, entry.content);
+
+      // Update the feedback entry with analysis results
+      await env.notebooklm_feedback_db
+        .prepare(
+          `UPDATE feedback
+           SET sentiment = ?, themes = ?, urgency = ?, analyzed_at = datetime('now')
+           WHERE id = ?`
+        )
+        .bind(analysis.sentiment, analysis.themes, analysis.urgency, entry.id)
+        .run();
+
+      analyzedCount++;
+    } catch (error) {
+      console.error(`Failed to analyze feedback ${entry.id}:`, error);
+    }
+  }
+
+  return Response.json({
+    success: true,
+    message: `Analyzed ${analyzedCount} feedback entries`,
+    analyzed: analyzedCount,
+  }, { headers: corsHeaders });
+}
+
+// Helper function to analyze text with Workers AI
+async function analyzeWithAI(
+  env: Env,
+  text: string
+): Promise<{ sentiment: string; themes: string; urgency: string; summary: string }> {
+  const prompt = `Analyze this user feedback about NotebookLM (Google's AI notebook tool):
+
+"${text}"
+
+Respond in JSON format only, no other text:
+{
+  "sentiment": "positive" or "negative" or "neutral",
+  "themes": "comma-separated list of 1-3 main themes like: usability, feature-request, bug, performance, pricing, documentation",
+  "urgency": "low" or "medium" or "high" or "critical",
+  "summary": "one sentence summary of the feedback"
+}`;
+
+  const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+    prompt,
+    max_tokens: 200,
+  });
+
+  // Parse the AI response
+  try {
+    const responseText = (response as { response: string }).response;
+    // Extract JSON from the response (in case there's extra text)
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+  } catch (error) {
+    console.error("Failed to parse AI response:", error);
+  }
+
+  // Return defaults if parsing fails
+  return {
+    sentiment: "neutral",
+    themes: "general",
+    urgency: "medium",
+    summary: "Unable to analyze",
+  };
 }
