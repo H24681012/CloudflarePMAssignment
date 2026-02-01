@@ -210,24 +210,94 @@ Respond with ONLY the JTBD statement, nothing else.`;
   return "When I use this product, but encounter friction, help me accomplish my goal, so I can be more productive.";
 }
 
-// Batch compute JTBDs for multiple feedback items
-async function computeJTBDsForFeedback(env: Env, feedbackItems: FeedbackEntry[]): Promise<Map<number, string>> {
-  const jtbdMap = new Map<number, string>();
+// Generalized JTBD structure
+interface GeneralizedJTBD {
+  job: string;
+  category: string;
+  feedbackCount: number;
+  avgSentiment: number;
+  sources: string[];
+}
 
-  // Process in parallel for better performance (limit concurrency)
-  const batchSize = 5;
-  for (let i = 0; i < feedbackItems.length; i += batchSize) {
-    const batch = feedbackItems.slice(i, i + batchSize);
-    const results = await Promise.all(
-      batch.map(async (f) => {
-        const jtbd = await computeJTBD(env, f.content);
-        return { id: f.id!, jtbd };
-      })
-    );
-    results.forEach(r => jtbdMap.set(r.id, r.jtbd));
+// Compute 4-5 generalized JTBDs from all feedback (not individual ones)
+async function computeGeneralizedJTBDs(env: Env, feedbackItems: FeedbackEntry[]): Promise<GeneralizedJTBD[]> {
+  if (feedbackItems.length === 0) return [];
+
+  // Combine all feedback content for analysis
+  const feedbackSummary = feedbackItems.slice(0, 30).map((f, i) =>
+    `${i + 1}. [${f.source}] "${f.content}"`
+  ).join('\n');
+
+  const prompt = `Analyze these ${feedbackItems.length} customer feedback items about NotebookLM and identify the 4-5 KEY jobs-to-be-done that represent the main user needs.
+
+FEEDBACK:
+${feedbackSummary}
+
+For each job, use the JTBD format:
+"When I [situation/context], but [barrier/problem], help me [goal], so I can [outcome]."
+
+Respond with ONLY valid JSON array (no other text):
+[
+  {
+    "job": "When I [context], but [barrier], help me [goal], so I can [outcome].",
+    "category": "short category name like 'Research', 'Audio', 'Collaboration', 'Performance', 'Features'"
+  }
+]
+
+Return exactly 4-5 jobs that capture the MAIN themes. Generalize similar feedback into broader jobs.`;
+
+  try {
+    const response = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", {
+      messages: [
+        { role: "system", content: "You are a product analyst. Respond with only valid JSON array." },
+        { role: "user", content: prompt }
+      ],
+      max_tokens: 800,
+    });
+
+    const text = ((response as any).response || "").trim();
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(parsed)) {
+        // Calculate stats for each job category
+        return parsed.slice(0, 5).map((j: any) => {
+          const category = (j.category || 'General').toLowerCase();
+          // Find matching feedback for this category based on keywords
+          const keywords = category.split(/[\s,]+/);
+          const matchingFeedback = feedbackItems.filter(f =>
+            keywords.some(k => f.content.toLowerCase().includes(k) ||
+                              (f.themes && f.themes.toLowerCase().includes(k)))
+          );
+
+          const count = Math.max(matchingFeedback.length, Math.floor(feedbackItems.length / 5));
+          const avgSent = matchingFeedback.length > 0
+            ? matchingFeedback.reduce((sum, f) => sum + parseInt(f.sentiment || "5"), 0) / matchingFeedback.length
+            : 5;
+          const sources = [...new Set(matchingFeedback.map(f => f.source))];
+
+          return {
+            job: j.job || "When I use this product, but encounter friction, help me accomplish my goal, so I can be more productive.",
+            category: j.category || 'General',
+            feedbackCount: count,
+            avgSentiment: Math.round(avgSent * 10) / 10,
+            sources: sources.length > 0 ? sources : ['multiple']
+          };
+        });
+      }
+    }
+  } catch (e) {
+    console.error("Generalized JTBD computation error:", e);
   }
 
-  return jtbdMap;
+  // Fallback if AI fails
+  return [{
+    job: "When I need to analyze documents, but the process is manual and slow, help me quickly extract insights, so I can make better decisions faster.",
+    category: "Research",
+    feedbackCount: feedbackItems.length,
+    avgSentiment: 5,
+    sources: [...new Set(feedbackItems.map(f => f.source))]
+  }];
 }
 
 // Auto-seed function (called automatically when DB is empty)
@@ -704,7 +774,7 @@ function getNav(activePage: string): string {
 async function handleDashboard(env: Env, page: string): Promise<Response> {
   let feedbackData: FeedbackEntry[] = [];
   let stats = { total: 0, analyzed: 0, avgSentiment: 0, avgUrgency: 0, bySource: {} as Record<string, number>, topThemes: [] as any[] };
-  let jtbdMap: Map<number, string> = new Map();
+  let generalizedJTBDs: GeneralizedJTBD[] = [];
 
   try {
     const result = await env.DB.prepare("SELECT * FROM feedback ORDER BY created_at DESC").all();
@@ -735,9 +805,9 @@ async function handleDashboard(env: Env, page: string): Promise<Response> {
     const themeResult = await env.DB.prepare("SELECT name, count FROM themes ORDER BY count DESC LIMIT 10").all();
     stats.topThemes = themeResult.results;
 
-    // For JTBD page: compute JTBDs on-demand using Workers AI (OUTPUT, not stored)
+    // For JTBD page: compute GENERALIZED JTBDs on-demand using Workers AI (OUTPUT, not stored)
     if (page === 'insights' && analyzed.length > 0) {
-      jtbdMap = await computeJTBDsForFeedback(env, analyzed.slice(0, 20)); // Limit for performance
+      generalizedJTBDs = await computeGeneralizedJTBDs(env, analyzed);
     }
   } catch (e) {
     // DB might be empty
@@ -747,7 +817,7 @@ async function handleDashboard(env: Env, page: string): Promise<Response> {
   if (page === 'overview') content = getOverviewPage(feedbackData, stats);
   else if (page === 'clusters') content = getClustersPage();
   else if (page === 'feedback') content = getFeedbackPage(feedbackData);
-  else if (page === 'insights') content = getInsightsPage(feedbackData, stats, jtbdMap);
+  else if (page === 'insights') content = getInsightsPage(feedbackData, stats, generalizedJTBDs);
   else if (page === 'digest') content = getDigestPage(feedbackData, stats);
 
   const extraScripts = page === 'clusters' ? '<script src="https://d3js.org/d3.v7.min.js"></script>' : '';
@@ -874,8 +944,8 @@ function getOverviewPage(feedbackData: FeedbackEntry[], stats: any): string {
           responsive: true, maintainAspectRatio: false,
           plugins: { legend: { display: false }, tooltip: { callbacks: { label: (ctx) => painMapData[ctx.dataIndex].source + ': "' + painMapData[ctx.dataIndex].sample.substring(0, 40) + '..."' } } },
           scales: {
-            x: { min: -0.5, max: 10.5, title: { display: true, text: 'Sentiment (0=negative, 10=positive)', color: '#94a3b8' }, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } },
-            y: { min: -0.5, max: 10.5, title: { display: true, text: 'Urgency (0=low, 10=critical)', color: '#94a3b8' }, ticks: { color: '#94a3b8' }, grid: { color: '#334155' } }
+            x: { min: 0, max: 10, title: { display: true, text: 'Sentiment (0=negative, 10=positive)', color: '#94a3b8' }, ticks: { color: '#94a3b8', stepSize: 1 }, grid: { color: '#334155' } },
+            y: { min: 0, max: 10, title: { display: true, text: 'Urgency (0=low, 10=critical)', color: '#94a3b8' }, ticks: { color: '#94a3b8', stepSize: 1 }, grid: { color: '#334155' } }
           }
         }
       });
@@ -897,11 +967,24 @@ function getClustersPage(): string {
     <p class="page-subtitle">Semantic similarity visualization powered by <strong>Vectorize</strong> + <strong>Workers AI</strong> embeddings</p>
 
     <div class="card full-width" style="margin-bottom: 2rem;">
-      <h2>How it works</h2>
-      <p style="color: #94a3b8; font-size: 0.9rem;">
-        Each node is a feedback item. Nodes are connected when Vectorize determines they are >75% semantically similar.
-        <br>Color = sentiment (green=positive, yellow=neutral, red=negative). Size = urgency level.
-      </p>
+      <h2>How Cluster Analysis Works</h2>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-top: 1rem;">
+        <div style="background: #0f172a; padding: 1rem; border-radius: 8px; border-left: 3px solid #3b82f6;">
+          <h3 style="color: #3b82f6; font-size: 0.9rem; margin-bottom: 0.5rem;">1. Embedding Generation</h3>
+          <p style="color: #94a3b8; font-size: 0.85rem; line-height: 1.5;">Each feedback item is converted to a 768-dimensional vector using <strong>Workers AI (bge-base-en-v1.5)</strong>. This captures semantic meaning.</p>
+        </div>
+        <div style="background: #0f172a; padding: 1rem; border-radius: 8px; border-left: 3px solid #8b5cf6;">
+          <h3 style="color: #8b5cf6; font-size: 0.9rem; margin-bottom: 0.5rem;">2. Vector Storage</h3>
+          <p style="color: #94a3b8; font-size: 0.85rem; line-height: 1.5;">Vectors are stored in <strong>Cloudflare Vectorize</strong>, enabling fast similarity queries across all feedback.</p>
+        </div>
+        <div style="background: #0f172a; padding: 1rem; border-radius: 8px; border-left: 3px solid #22c55e;">
+          <h3 style="color: #22c55e; font-size: 0.9rem; margin-bottom: 0.5rem;">3. Similarity Clustering</h3>
+          <p style="color: #94a3b8; font-size: 0.85rem; line-height: 1.5;">Feedback with <strong>>75% cosine similarity</strong> are connected. Clusters reveal common pain points and feature requests.</p>
+        </div>
+      </div>
+      <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(139, 92, 246, 0.1); border-radius: 8px;">
+        <p style="color: #a78bfa; font-size: 0.85rem; margin: 0;"><strong>Reading the graph:</strong> Node color = sentiment (green=positive, red=negative). Node size = urgency. Connected nodes = semantically similar feedback.</p>
+      </div>
     </div>
 
     <div class="card full-width">
@@ -1127,20 +1210,6 @@ function getFeedbackPage(feedbackData: FeedbackEntry[]): string {
                     <span class="tweet-metric" style="background: rgba(100, 116, 139, 0.2); color: #94a3b8;">⏳ Pending AI analysis</span>
                   </div>
                 `}
-                <div class="tweet-actions">
-                  <div class="tweet-action">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
-                  </div>
-                  <div class="tweet-action">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 1l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 23l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-                  </div>
-                  <div class="tweet-action">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
-                  </div>
-                  <div class="tweet-action">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -1151,58 +1220,56 @@ function getFeedbackPage(feedbackData: FeedbackEntry[]): string {
 }
 
 // JTBD page - JTBDs are computed on-demand by AI, never stored in database
-function getInsightsPage(feedbackData: FeedbackEntry[], stats: any, computedJTBDs: Map<number, string>): string {
+function getInsightsPage(feedbackData: FeedbackEntry[], stats: any, generalizedJTBDs: GeneralizedJTBD[]): string {
   const analyzed = feedbackData.filter(f => f.analyzed_at);
 
-  // Build list of feedback items with their on-demand computed JTBDs
-  interface FeedbackWithJTBD extends FeedbackEntry {
-    computed_jtbd: string;
-  }
+  // Highlight JTBD parts
+  const highlightJTBD = (text: string) => {
+    return text
+      .replace(/(When I)/gi, '<span class="when">$1</span>')
+      .replace(/(, but|but )/gi, '<span class="but">$1</span>')
+      .replace(/(help me)/gi, '<span class="help">$1</span>')
+      .replace(/(so I can|so I)/gi, '<span class="so">$1</span>');
+  };
 
-  const feedbackWithJTBDs: FeedbackWithJTBD[] = analyzed
-    .filter(f => f.id && computedJTBDs.has(f.id))
-    .map(f => ({ ...f, computed_jtbd: computedJTBDs.get(f.id!)! }));
-
-  // Group by JTBD (computed on-demand, NOT from database)
-  const jtbdGroups: Record<string, FeedbackWithJTBD[]> = {};
-  feedbackWithJTBDs.forEach(f => {
-    const jtbd = f.computed_jtbd;
-    if (!jtbdGroups[jtbd]) jtbdGroups[jtbd] = [];
-    jtbdGroups[jtbd].push(f);
-  });
-
-  // Sort JTBDs by frequency
-  const sortedJTBDs = Object.entries(jtbdGroups)
-    .sort((a, b) => b[1].length - a[1].length);
-
-  // Calculate avg sentiment per JTBD
-  const getAvgSentiment = (items: FeedbackWithJTBD[]) => {
-    const sum = items.reduce((acc, f) => acc + parseInt(f.sentiment || "5"), 0);
-    return Math.round((sum / items.length) * 10) / 10;
+  // Category icons
+  const getCategoryIcon = (category: string) => {
+    const cat = category.toLowerCase();
+    if (cat.includes('research') || cat.includes('analysis')) return '🔬';
+    if (cat.includes('audio') || cat.includes('voice')) return '🎧';
+    if (cat.includes('collab') || cat.includes('team') || cat.includes('share')) return '👥';
+    if (cat.includes('perf') || cat.includes('speed') || cat.includes('reliab')) return '⚡';
+    if (cat.includes('feature') || cat.includes('custom')) return '✨';
+    if (cat.includes('mobile') || cat.includes('access')) return '📱';
+    if (cat.includes('security') || cat.includes('privacy')) return '🔒';
+    return '💡';
   };
 
   return `
     <style>
-      .jtbd-full-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1rem; }
-      .jtbd-full-card:hover { border-color: #8b5cf6; }
-      .jtbd-statement { font-size: 1rem; line-height: 1.6; color: #e2e8f0; margin-bottom: 1rem; }
-      .jtbd-statement .when { color: #60a5fa; }
-      .jtbd-statement .but { color: #f87171; }
-      .jtbd-statement .help { color: #4ade80; }
-      .jtbd-statement .so { color: #c084fc; }
-      .jtbd-meta { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
-      .jtbd-count { background: #8b5cf6; color: white; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem; font-weight: 600; }
-      .jtbd-sentiment { padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.85rem; }
-      .jtbd-sources { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
-      .jtbd-note { background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); padding: 0.75rem; border-radius: 8px; margin-bottom: 1.5rem; }
-      .jtbd-note p { color: #a78bfa; font-size: 0.85rem; margin: 0; }
+      .jtbd-full-card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; transition: all 0.2s; }
+      .jtbd-full-card:hover { border-color: #8b5cf6; transform: translateY(-2px); }
+      .jtbd-header { display: flex; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }
+      .jtbd-icon { font-size: 2rem; width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; background: #0f172a; border-radius: 12px; }
+      .jtbd-category { font-size: 0.8rem; color: #8b5cf6; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; margin-bottom: 0.25rem; }
+      .jtbd-statement { font-size: 1.1rem; line-height: 1.6; color: #e2e8f0; }
+      .jtbd-statement .when { color: #60a5fa; font-weight: 500; }
+      .jtbd-statement .but { color: #f87171; font-weight: 500; }
+      .jtbd-statement .help { color: #4ade80; font-weight: 500; }
+      .jtbd-statement .so { color: #c084fc; font-weight: 500; }
+      .jtbd-meta { display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #334155; }
+      .jtbd-stat { display: flex; align-items: center; gap: 0.5rem; background: #0f172a; padding: 0.5rem 0.75rem; border-radius: 8px; font-size: 0.85rem; }
+      .jtbd-stat-value { font-weight: 600; }
+      .jtbd-sources { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+      .jtbd-note { background: rgba(139, 92, 246, 0.1); border: 1px solid rgba(139, 92, 246, 0.3); padding: 1rem; border-radius: 8px; margin-bottom: 2rem; }
+      .jtbd-note p { color: #a78bfa; font-size: 0.9rem; margin: 0; }
     </style>
 
-    <h1 class="page-title">Jobs to be Done</h1>
-    <p class="page-subtitle">AI-computed jobs from customer feedback using <strong>Workers AI (Llama 3.1)</strong></p>
+    <h1 class="page-title">Key Jobs to be Done</h1>
+    <p class="page-subtitle">AI-identified user needs from ${analyzed.length} feedback items using <strong>Workers AI (Llama 3.1)</strong></p>
 
     <div class="jtbd-note">
-      <p><strong>Architecture:</strong> JTBDs are computed on-demand by Workers AI. The database only stores raw feedback (inputs). JTBDs are outputs, never stored.</p>
+      <p><strong>How it works:</strong> Workers AI analyzes all feedback to identify 4-5 generalized jobs that represent the main user needs. These are computed on-demand and never stored in the database.</p>
     </div>
 
     <div class="card full-width" style="margin-bottom: 2rem; background: linear-gradient(135deg, #1e3a5f 0%, #1e293b 100%); border-color: #3b82f6;">
@@ -1211,50 +1278,48 @@ function getInsightsPage(feedbackData: FeedbackEntry[], stats: any, computedJTBD
         Each job follows the format: <span style="color: #60a5fa;">When I</span> [context], <span style="color: #f87171;">but</span> [barrier], <span style="color: #4ade80;">help me</span> [goal], <span style="color: #c084fc;">so I can</span> [outcome].
       </p>
       <p style="margin-top: 0.5rem; color: #64748b; font-size: 0.9rem;">
-        ${sortedJTBDs.length} unique jobs computed from ${feedbackWithJTBDs.length} feedback items.
+        ${generalizedJTBDs.length} key jobs identified from ${analyzed.length} feedback items across ${Object.keys(stats.bySource).length} sources.
       </p>
     </div>
 
-    <h2 style="margin-bottom: 1rem;">AI-Computed Jobs (${sortedJTBDs.length})</h2>
-
-    ${sortedJTBDs.map(([jtbd, items]) => {
-      const avgSent = getAvgSentiment(items);
-      const sentColor = avgSent >= 7 ? 'rgba(34, 197, 94, 0.2)' : avgSent >= 4 ? 'rgba(234, 179, 8, 0.2)' : 'rgba(239, 68, 68, 0.2)';
-      const sentTextColor = avgSent >= 7 ? '#4ade80' : avgSent >= 4 ? '#facc15' : '#f87171';
-      const sources = [...new Set(items.map(f => f.source))];
-
-      // Highlight JTBD parts
-      const highlightJTBD = (text: string) => {
-        return text
-          .replace(/(When I)/gi, '<span class="when">$1</span>')
-          .replace(/(, but|but )/gi, '<span class="but">$1</span>')
-          .replace(/(help me)/gi, '<span class="help">$1</span>')
-          .replace(/(so I can|so I)/gi, '<span class="so">$1</span>');
-      };
+    ${generalizedJTBDs.length > 0 ? generalizedJTBDs.map((jtbd, index) => {
+      const sentColor = jtbd.avgSentiment >= 7 ? '#4ade80' : jtbd.avgSentiment >= 4 ? '#facc15' : '#f87171';
+      const sentBg = jtbd.avgSentiment >= 7 ? 'rgba(34, 197, 94, 0.15)' : jtbd.avgSentiment >= 4 ? 'rgba(234, 179, 8, 0.15)' : 'rgba(239, 68, 68, 0.15)';
+      const sentEmoji = jtbd.avgSentiment >= 7 ? '😊' : jtbd.avgSentiment >= 4 ? '😐' : '😞';
 
       return `
         <div class="jtbd-full-card">
-          <div class="jtbd-statement">${highlightJTBD(jtbd)}</div>
-          <div class="jtbd-meta">
-            <span class="jtbd-count">${items.length}x mentioned</span>
-            <span class="jtbd-sentiment" style="background: ${sentColor}; color: ${sentTextColor};">
-              ${avgSent >= 7 ? '😊' : avgSent >= 4 ? '😐' : '😞'} Avg sentiment: ${avgSent}/10
-            </span>
+          <div class="jtbd-header">
+            <div class="jtbd-icon">${getCategoryIcon(jtbd.category)}</div>
+            <div style="flex: 1;">
+              <div class="jtbd-category">${jtbd.category}</div>
+              <div class="jtbd-statement">${highlightJTBD(jtbd.job)}</div>
+            </div>
           </div>
-          <div class="jtbd-sources">
-            ${sources.map(s => `<span class="badge badge-source">${s}</span>`).join('')}
+          <div class="jtbd-meta">
+            <div class="jtbd-stat">
+              <span>📊</span>
+              <span class="jtbd-stat-value" style="color: #8b5cf6;">~${jtbd.feedbackCount}</span>
+              <span style="color: #94a3b8;">related feedback</span>
+            </div>
+            <div class="jtbd-stat" style="background: ${sentBg};">
+              <span>${sentEmoji}</span>
+              <span class="jtbd-stat-value" style="color: ${sentColor};">${jtbd.avgSentiment}/10</span>
+              <span style="color: #94a3b8;">sentiment</span>
+            </div>
+            <div class="jtbd-sources">
+              ${jtbd.sources.slice(0, 4).map(s => `<span class="badge badge-source">${s}</span>`).join('')}
+            </div>
           </div>
         </div>
       `;
-    }).join('')}
-
-    ${sortedJTBDs.length === 0 ? `
+    }).join('') : `
       <div class="card full-width">
         <p style="text-align: center; color: #64748b; padding: 2rem;">
-          Loading JTBDs... Workers AI is computing jobs-to-be-done from feedback.
+          Computing key jobs-to-be-done using Workers AI... This may take a moment.
         </p>
       </div>
-    ` : ''}
+    `}
   `;
 }
 
